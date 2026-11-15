@@ -1,7 +1,7 @@
 import { notesSourceId, notesSyncStatus, type NotesSyncStatus } from "@/src/server";
 
 /** Validate uploaded notes, preview sync status, or extract selected files. */
-import { convertPdf, extraction, joinPages, NotesImportError, sourceDirectory, stores } from "@/src/server";
+import { convertPdf, extraction, joinPages, NotesImportError, sourceDirectory, stores, beginNotesImportRequest, cancelNotesImportRequest, validImportRequestId } from "@/src/server";
 import { IMPORT_EXTENSIONS, MAX_IMPORT_BODY_BYTES, MAX_IMPORT_BYTES, UNSUPPORTED_TYPE_MESSAGE, validNotesPath } from "@/lib/notes-import-limits.ts";
 import { FormBodyLimitError, readBoundedFormData } from "@/lib/bounded-form-data.ts";
 import {
@@ -90,6 +90,11 @@ export async function POST(request: Request) {
 		return Response.json({ results: [], error: "Import contains an unsafe or mismatched relative path" }, { status: 400 });
 	}
 	const preview = form.get("preview") === "true";
+	const requestId = form.get("requestId");
+	if (requestId !== null && !validImportRequestId(requestId)) return Response.json({ error: "Invalid import request identity", results: [] }, { status: 400 });
+	let lifecycle: ReturnType<typeof beginNotesImportRequest>;
+	try { lifecycle = beginNotesImportRequest(requestId ?? undefined); }
+	catch (error) { return Response.json({ error: error instanceof Error ? error.message : String(error), results: [] }, { status: 503 }); }
 	const results: ImportResult[] = [];
 	const queue = files.map((file, requestIndex) => ({ file, requestIndex, filePath: paths[requestIndex]! }));
 	const workers = Array.from({ length: Math.min(3, files.length) }, async () => {
@@ -98,7 +103,9 @@ export async function POST(request: Request) {
 			if (!next) return;
 			const { file, requestIndex, filePath } = next;
 			try {
+				if (lifecycle.signal.aborted) throw new NotesImportError("aborted", { nodes: 0, chains: 0 }, "Import stopped.");
 				const notes = await readNotesFile(file);
+				if (lifecycle.signal.aborted) throw new NotesImportError("aborted", { nodes: 0, chains: 0 }, "Import stopped.");
 				if (notes.kind === "refused") {
 					results.push({ filePath, requestIndex, outcome: "failed", ok: false, error: notes.error });
 					continue;
@@ -110,7 +117,7 @@ export async function POST(request: Request) {
 					continue;
 				}
 				sourceDirectory.registerImport(filePath);
-				const stats = await extraction.importNotes({ filePath, text: notes.text });
+				const stats = await extraction.importNotes({ filePath, text: notes.text, signal: lifecycle.signal });
 				results.push({ filePath, requestIndex, outcome: "completed", ok: true, stats, syncStatus, ...(syncStatus === "unchanged" ? { notice: "Unchanged. Skipped extraction." } : notes.notice ? { notice: notes.notice } : {}) });
 			} catch (err) {
 				if (err instanceof ModelsNotConfiguredError) {
@@ -128,6 +135,17 @@ export async function POST(request: Request) {
 			} finally { if (!preview) emit("sources-changed", {}); }
 		}
 	});
-	await Promise.all(workers);
+	try { await Promise.all(workers); }
+	finally { lifecycle.finish(); }
 	return Response.json({ results });
+}
+
+export async function DELETE(request: Request) {
+	let body: unknown;
+	try { body = await request.json(); } catch { return Response.json({ error: "Invalid JSON" }, { status: 400 }); }
+	const id = body && typeof body === "object" && "requestId" in body ? body.requestId : undefined;
+	if (!validImportRequestId(id)) return Response.json({ error: "Invalid import request identity" }, { status: 400 });
+	try { cancelNotesImportRequest(id); }
+	catch (error) { return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 503 }); }
+	return Response.json({ ok: true });
 }

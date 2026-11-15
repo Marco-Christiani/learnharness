@@ -28,7 +28,7 @@ it("exclusions match literal fragments and wildcards without interpreting regex"
 	assert.ok(!matchesNotesExclusion("Course/notes.md", "build/, *.log"));
 });
 
-it("review waits for preview and syncs only checked files with changed contents", async () => {
+it("review waits for preview and sends checked files for server revalidation", async () => {
 	const originalFetch = globalThis.fetch;
 	const host = document.createElement("div"); document.body.append(host);
 	const root = createRoot(host);
@@ -49,9 +49,9 @@ it("review waits for preview and syncs only checked files with changed contents"
 		await act(async () => { boxes[2]!.dispatchEvent(new dom.window.Event("click", { bubbles: true })); });
 		await act(async () => button("Check changes").click());
 		assert.deepEqual(previews, ["new.md", "unchanged.md"]);
-		assert.equal(button("Sync").textContent, "Sync 1 files");
+		assert.equal(button("Sync").textContent, "Sync 2 files");
 		await act(async () => button("Sync").click());
-		assert.deepEqual(confirmed.map((file) => file.webkitRelativePath), ["new.md"]);
+		assert.deepEqual(confirmed.map((file) => file.webkitRelativePath), ["new.md", "unchanged.md"]);
 		assert.ok(closed);
 	} finally { await act(async () => root.unmount()); host.remove(); globalThis.fetch = originalFetch; }
 });

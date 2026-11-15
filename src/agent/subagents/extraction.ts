@@ -746,6 +746,7 @@ export interface ExtractionPipelineDeps extends GraphDeps, ExtractionModels {
 }
 
 export interface NotesImportInput {
+	signal?: AbortSignal;
 	/** The source's file path — its identity (deterministic src id) AND its
 	 *  provenance label in the detail card. */
 	filePath: string;
@@ -1298,7 +1299,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	// The notes auditor is the SAME identity-linker as the chat one (one
 	// schema now that attribution is gone) — audit() above, verbatim.
 
-	async function runNotesExtraction(input: { id: string; filePath: string; text: string; importedAt: string }): Promise<EmissionStats> {
+	async function runNotesExtraction(input: { id: string; filePath: string; text: string; importedAt: string; signal?: AbortSignal }): Promise<EmissionStats> {
 		const { id } = input;
 		// importNotes owns the source exclusion, including metadata and cleanup.
 		const t0 = performance.now();
@@ -1327,6 +1328,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			// the file actually chunked.
 			const settled: PromiseSettledResult<EmissionStats>[] = [];
 			for (const [chunkIndex, chunk] of chunks.entries()) {
+				input.signal?.throwIfAborted();
 				const part = chunks.length > 1 ? { i: chunkIndex + 1, n: chunks.length } : undefined;
 				// Keep the actual signal after runJob tears down its registry row:
 				// usage persistence can throw and mask the body's AbortError.
@@ -1410,9 +1412,12 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	/** Completed imports skip identical text under the same source path. */
 	async function importNotes(input: NotesImportInput): Promise<EmissionStats> {
 		const id = `src_${crypto.createHash("sha256").update(input.filePath).digest("hex").slice(0, 12)}`;
+		if (input.signal?.aborted) throw new NotesImportError("aborted", { nodes: 0, chains: 0 }, "Import stopped.");
 		// Acquire BEFORE source upsert: overlapping contents must not alter metadata.
 		if (inFlight.has(id)) throw new NotesImportError("busy", { nodes: 0, chains: 0 }, "This file is already being imported. Try again when it finishes.");
 		inFlight.add(id);
+		const onAbort = () => { abortExtraction(id); };
+		input.signal?.addEventListener("abort", onAbort, { once: true });
 		try {
 			const importFingerprint = notesFingerprint(input.text);
 			const previous = graphStore.readSources().find((source) => source.id === id);
@@ -1421,12 +1426,14 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			// Clear completion before extraction because a failed run can retain merges.
 			graphStore.upsertSource({ id, filePath: input.filePath, importedAt });
 			const stats = await runNotesExtraction({ id, ...input, importedAt });
+			if (input.signal?.aborted) throw new NotesImportError("aborted", stats, "Import stopped.");
 			graphStore.upsertSource({ id, filePath: input.filePath, importedAt, importFingerprint });
 			return stats;
 		} catch (err) {
 			if (err instanceof NotesImportError || err instanceof ModelsNotConfiguredError || err instanceof ProviderKeyMissingError) throw err;
 			throw new NotesImportError("failed", { nodes: 0, chains: 0 }, err instanceof Error ? err.message : String(err), { cause: err });
 		} finally {
+			input.signal?.removeEventListener("abort", onAbort);
 			inFlight.delete(id);
 		}
 	}

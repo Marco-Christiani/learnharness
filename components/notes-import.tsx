@@ -48,14 +48,15 @@ export function parseNotesImportResults(body: unknown, files: readonly File[]): 
 	return body.results as NotesImportResult[];
 }
 
-export async function postNotesImport(files: readonly File[], preview = false): Promise<NotesImportResult[]> {
+export async function postNotesImport(files: readonly File[], preview = false, requestId?: string, signal?: AbortSignal): Promise<NotesImportResult[]> {
 	const form = new FormData();
+	if (requestId) form.append("requestId", requestId);
 	if (preview) form.append("preview", "true");
 	for (const file of files) {
 		form.append("files", file);
 		form.append("paths", notesPath(file));
 	}
-	const response = await fetch("/api/graph/import", { method: "POST", body: form });
+	const response = await fetch("/api/graph/import", { method: "POST", body: form, signal });
 	let body: unknown;
 	try { body = await response.json(); }
 	catch { throw new Error("Invalid import response. Check the graph before retrying."); }
@@ -70,13 +71,11 @@ export async function postNotesImport(files: readonly File[], preview = false): 
 
 // Client module singleton: shared by both home views and successive selections.
 // SSR never appends Files, and uses the immutable empty server snapshot.
-async function stopNotesImport(path: string) {
-	const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(path));
-	const id = `src_${Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 12)}`;
-	const response = await fetch("/api/activity/abort", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "extraction", id }) });
-	if (!response.ok) throw new Error("Could not stop extraction. Try again.");
+async function stopNotesImport(_path: string, requestId: string) {
+	const response = await fetch("/api/graph/import", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestId }) });
+	if (!response.ok) throw new Error("Could not stop import. Try again.");
 }
-const pageImportQueue = createNotesImportQueue(postNotesImport, stopNotesImport);
+const pageImportQueue = createNotesImportQueue((files, requestId) => postNotesImport(files, false, requestId), stopNotesImport);
 
 export function NotesImportProgress() {
 	const snapshot = useSyncExternalStore(pageImportQueue.subscribe, pageImportQueue.getSnapshot, () => EMPTY_IMPORT_QUEUE);
@@ -90,7 +89,7 @@ export function NotesImportProgress() {
 	if (!snapshot.rows.length) return null;
 	return <div className="fixed bottom-4 left-4 z-50 rounded-lg border bg-card shadow-lg">
 		<button className="p-2 text-xs" onClick={() => setOpen(!open)}>Sync progress ({snapshot.rows.filter((row) => row.status === "completed").length}/{snapshot.rows.length})</button>
-		<HostDialog open={open} onClose={() => { setOpen(false); return "closed"; }} aria-label="Sync progress" frame={<div className="max-h-[75vh] w-[min(90vw,48rem)] overflow-auto rounded border bg-card p-4 shadow-xl" />}>
+		<HostDialog open={open} onClose={() => { setOpen(false); return "closed"; }} aria-label="Sync progress" backdropProps={{ className: "fixed inset-0 flex items-center justify-center bg-background/80" }} frame={<div className="max-h-[75vh] w-[min(90vw,48rem)] overflow-auto rounded border bg-card p-4 shadow-xl" />}>
 			<div className="flex justify-between text-sm"><button onClick={() => snapshot.paused ? pageImportQueue.resume() : pageImportQueue.pause()}>{snapshot.paused ? "Resume queue" : "Pause queue"}</button><button onClick={() => setOpen(false)}>Close progress</button></div>
 			<p className="py-2 text-xs text-muted-foreground">Pause holds pending files. Stop cancels an active extraction. Earlier merges remain saved.</p>
 			{snapshot.rows.map((row) => <div key={row.index} className="flex items-start gap-2 border-t py-2 text-xs"><span className="min-w-0 flex-1 whitespace-pre-wrap break-all">{row.path}</span><span>{row.status}</span>{(row.status === "pending" || row.status === "extracting") && <button onClick={() => void pageImportQueue.cancel(row.index)}>{row.status === "pending" ? "Cancel" : "Stop"}</button>}</div>)}

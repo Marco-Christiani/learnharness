@@ -1,10 +1,19 @@
 import { IMPORT_EXTENSIONS, MAX_IMPORT_BYTES, validNotesPath } from "@/lib/notes-import-limits";
 import type { NotesImportResult } from "./notes-import";
 
+const selectionPaths = new WeakMap<File, string>();
+
+export function withNotesDestination(file: File, destination: string): File {
+	const copy = new File([file], file.name, { type: file.type, lastModified: file.lastModified });
+	Object.defineProperty(copy, "webkitRelativePath", { value: [destination, notesPath(file)].filter(Boolean).join("/") });
+	selectionPaths.set(copy, selectionPaths.get(file) ?? file.webkitRelativePath ?? "");
+	return copy;
+}
+
 export const notesPath = (file: File): string => file.webkitRelativePath || file.name;
 /** Folder imports silently exclude dot-prefixed files and directories below
  * the chosen root. The root is segment 0 and stays importable even when hidden. */
-const hiddenInFolder = (file: File): boolean => file.webkitRelativePath.split("/").slice(1).some((part) => part.startsWith("."));
+const hiddenInFolder = (file: File): boolean => (selectionPaths.get(file) ?? file.webkitRelativePath).split("/").slice(1).some((part) => part.startsWith("."));
 /** From the last dot of the file name, lower-cased. A dot that starts the name (".DS_Store") or ends it ("notes.") is not an extension. */
 const extensionLabel = (name: string): string => {
 	const dot = name.lastIndexOf(".");
@@ -15,7 +24,7 @@ const unsupportedSummary = (extensions: readonly string[]): string =>
 	`Skipped ${extensions.length} ${extensions.length === 1 ? "file that isn't" : "files that aren't"} text, Markdown, or PDF (${[...new Set(extensions)].join(", ")}).`;
 const unsafeSummary = (count: number): string =>
 	`Skipped ${count} ${count === 1 ? "file with a name" : "files with names"} the import can't use (e.g. a ':' in the name).`;
-export interface ImportQueueRow { index: number; path: string; status: "pending" | "extracting" | "completed" | "failed" | "canceled"; }
+export interface ImportQueueRow { index: number; path: string; status: "pending" | "extracting" | "stopping" | "completed" | "failed" | "canceled"; }
 export interface ImportQueueSnapshot {
 	paused: boolean;
 	rows: ImportQueueRow[];
@@ -27,7 +36,8 @@ export interface ImportQueueSnapshot {
 export const EMPTY_IMPORT_QUEUE: ImportQueueSnapshot = { importing: false, errors: [], notices: [], completion: 0, paused: false, rows: [] };
 
 /** Three workers share a pausable queue. Completed rows retain paths and status. */
-export function createNotesImportQueue(post: (files: readonly File[]) => Promise<NotesImportResult[]>, stop?: (path: string) => Promise<void>) {
+export function createNotesImportQueue(post: (files: readonly File[], requestId?: string) => Promise<NotesImportResult[]>, stop?: (path: string, requestId: string) => Promise<void>) {
+	const requestIds = new Map<number, string>();
 	let paused = false;
 	const rows = new Map<number, ImportQueueRow>();
 	const listeners = new Set<() => void>();
@@ -42,7 +52,7 @@ export function createNotesImportQueue(post: (files: readonly File[]) => Promise
 		for (const listener of [...listeners]) listener();
 	};
 	// Normalize a synchronously throwing transport to the same async settlement.
-	const send = async (file: File) => post([file]);
+	const send = async (file: File, index: number) => post([file], requestIds.get(index));
 	function pump(): void {
 		while (!paused && active < 3 && pending.length > 0) {
 			const { file, index } = pending.shift()!;
@@ -50,9 +60,9 @@ export function createNotesImportQueue(post: (files: readonly File[]) => Promise
 			active++;
 			void (async () => {
 				try {
-					const [r] = await send(file);
+					const [r] = await send(file, index);
 					if (!r) throw new Error("Invalid import response. Check the graph before retrying.");
-					rows.get(index)!.status = r.ok ? "completed" : "failed";
+					rows.get(index)!.status = r.ok ? "completed" : r.outcome === "aborted" ? "canceled" : "failed";
 					if (!r.ok) {
 						const details = [r.provider, r.missing?.join(", "), r.slots?.join(", ")].filter(Boolean);
 						failures.set(index, `${r.filePath}: ${r.error}${r.code ? `\n${[r.code, ...details].join(" — ")}` : ""}`);
@@ -81,7 +91,7 @@ export function createNotesImportQueue(post: (files: readonly File[]) => Promise
 				row.status = "canceled";
 				publish(active === 0 && pending.length === 0);
 			} else if (row.status === "extracting" && stop) {
-				try { await stop(row.path); }
+				try { await stop(row.path, requestIds.get(index)!); if (row.status === "extracting") row.status = "stopping"; publish(); }
 				catch (error) { failures.set(index, `${row.path}: ${error instanceof Error ? error.message : String(error)}`); publish(); }
 			}
 		},
@@ -89,7 +99,7 @@ export function createNotesImportQueue(post: (files: readonly File[]) => Promise
 		subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
 		append(files: readonly File[]) {
 			if (files.length === 0) return;
-			if (!snapshot.importing) { failures.clear(); notices.clear(); rows.clear(); sequence = 0; }
+			if (!snapshot.importing) { failures.clear(); notices.clear(); rows.clear(); requestIds.clear(); sequence = 0; }
 			// Unsafe names and unsupported types are summed up per pick; each summary sits where its first file was.
 			const unsafe: number[] = [], unsupported: { index: number; extension: string }[] = [];
 			for (const file of files) {
@@ -99,7 +109,7 @@ export function createNotesImportQueue(post: (files: readonly File[]) => Promise
 				if (!validNotesPath(path, file.name)) unsafe.push(index);
 				else if (!IMPORT_EXTENSIONS.test(file.name)) unsupported.push({ index, extension: extensionLabel(file.name) });
 				else if (file.size > MAX_IMPORT_BYTES) failures.set(index, `${path}: Too big. Max 25 MB.`);
-				else { rows.set(index, { index, path, status: "pending" }); pending.push({ file, index }); }
+				else { requestIds.set(index, crypto.randomUUID()); rows.set(index, { index, path, status: "pending" }); pending.push({ file, index }); }
 			}
 			if (unsafe.length > 0) failures.set(unsafe[0]!, unsafeSummary(unsafe.length));
 			if (unsupported.length > 0) failures.set(unsupported[0]!.index, unsupportedSummary(unsupported.map(({ extension }) => extension)));

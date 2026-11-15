@@ -318,3 +318,42 @@ it("sync preview classifies content without extraction or source registration", 
 		assert.ok(results.every((row: { ok: boolean }) => row.ok));
 	} finally { stores.graphStore.readSources = readSources; sourceDirectory.registerImport = register; }
 });
+
+it("Stop before an upload registers prevents all extraction and source placement", async () => {
+	const { DELETE } = await import("../app/api/graph/import/route.ts");
+	const requestId = crypto.randomUUID();
+	const register = sourceDirectory.registerImport;
+	extraction.importNotes = async () => { throw new Error("Stopped upload reached a model"); };
+	sourceDirectory.registerImport = () => { throw new Error("Stopped upload created a source"); };
+	try {
+		const stopped = await DELETE(new Request("http://localhost/api/graph/import", { method: "DELETE", body: JSON.stringify({ requestId }) }));
+		assert.equal(stopped.status, 200);
+		const form = new FormData(); form.set("requestId", requestId); form.append("files", new File(["text"], "stopped.md"));
+		const response = await POST(new Request("http://localhost/api/graph/import", { method: "POST", body: form }));
+		const { results } = await response.json();
+		assert.equal(results[0].outcome, "aborted");
+	} finally { sourceDirectory.registerImport = register; }
+});
+
+it("Stop targets its request when two uploads have the same source path", async () => {
+	const { DELETE } = await import("../app/api/graph/import/route.ts");
+	const signals: AbortSignal[] = [], finish: (() => void)[] = [];
+	extraction.importNotes = async ({ signal }) => {
+		signals.push(signal!);
+		await new Promise<void>((resolve) => { finish.push(resolve); });
+		if (signal!.aborted) throw new NotesImportError("aborted", { nodes: 0, chains: 0 }, "Stopped");
+		return { nodes: 0, chains: 0 };
+	};
+	const ids = [crypto.randomUUID(), crypto.randomUUID()];
+	const requests = ids.map((requestId) => {
+		const form = new FormData(); form.set("requestId", requestId); form.append("files", new File(["text"], "same-path.md"));
+		return POST(new Request("http://localhost/api/graph/import", { method: "POST", body: form }));
+	});
+	try {
+		while (signals.length < 2) await new Promise((resolve) => setImmediate(resolve));
+		await DELETE(new Request("http://localhost/api/graph/import", { method: "DELETE", body: JSON.stringify({ requestId: ids[1] }) }));
+		assert.equal(signals[0]!.aborted, false); assert.equal(signals[1]!.aborted, true);
+	} finally { for (const done of finish) done(); }
+	const results = await Promise.all(requests.map(async (response) => (await (await response).json()).results[0]));
+	assert.deepEqual(results.map((row) => row.outcome), ["completed", "aborted"]);
+});

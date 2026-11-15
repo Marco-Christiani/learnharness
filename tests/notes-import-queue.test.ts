@@ -244,9 +244,18 @@ it("stopping an active file uses its full path and awaits the server outcome", a
 	queue.append([file("notes.md", "Course/Week/notes.md")]);
 	await queue.cancel(0);
 	assert.deepEqual(stopped, ["Course/Week/notes.md"]);
-	assert.equal(queue.getSnapshot().rows[0]!.status, "extracting");
+	assert.equal(queue.getSnapshot().rows[0]!.status, "stopping");
 	finish([{ ...success("Course/Week/notes.md"), ok: false, outcome: "aborted", error: "Stopped" }]);
 	await tick();
-	assert.equal(queue.getSnapshot().rows[0]!.status, "failed");
+	assert.equal(queue.getSnapshot().rows[0]!.status, "canceled");
 	assert.equal(queue.getSnapshot().importing, false);
+});
+
+it("destination folders preserve explicit hidden-file and hidden-root selections", async () => {
+	const { withNotesDestination } = await import("../components/notes-import-queue.ts");
+	const sent: string[] = [];
+	const queue = createNotesImportQueue(async ([selected]) => { sent.push(selected!.webkitRelativePath); return [success(selected!.webkitRelativePath)]; });
+	queue.append([withNotesDestination(file(".notes.md"), "Course"), withNotesDestination(file("notes.md", ".Vault/notes.md"), "Course")]);
+	await tick();
+	assert.deepEqual(sent, ["Course/.notes.md", "Course/.Vault/notes.md"]);
 });

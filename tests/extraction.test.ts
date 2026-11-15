@@ -1719,7 +1719,7 @@ describe("the notes front door (importNotes — format-agnostic)", () => {
 		assert.deepEqual(await pipeline.importNotes({ filePath, text: NOTES_TEXT }), { nodes: 1, chains: 0 });
 	});
 
-	it("aborts like a chat run: true cancellation, nothing merged, partial usage in the source record", async () => {
+	for (const method of ["source", "request"] as const) it(`aborts by ${method} with partial usage and no completed fingerprint`, async () => {
 		const ledgers = memoryLedgers();
 		const pipeline = createExtractionPipeline({
 			chatStore,
@@ -1727,15 +1727,18 @@ describe("the notes front door (importNotes — format-agnostic)", () => {
 			extractor: hangingModel(),
 			auditor: submitModel("submit_review", NOTES_VERDICT),
 		});
-		const runPromise = pipeline.importNotes({ filePath: "/vault/learn vim.md", text: NOTES_TEXT });
+		const controller = new AbortController();
+		const runPromise = pipeline.importNotes({ filePath: "/vault/learn vim.md", text: NOTES_TEXT, signal: controller.signal });
 
 		const srcId = extractionStatuses().find((r) => r.chatId.startsWith("src_"))!.chatId;
-		assert.equal(abortExtraction(srcId), true);
+		if (method === "source") assert.equal(abortExtraction(srcId), true);
+		else controller.abort();
 		await assert.rejects(runPromise, (error) => error instanceof NotesImportError && error.outcome === "aborted" && error.partialStats.nodes === 0);
 		assert.equal(ledgers.readNodes().length, 0, "nothing merged");
 		assert.equal(ledgers.readCheckpoints().length, 0, "nothing checkpointed");
 		assert.equal(ledgers.readSources()[0]!.extractions?.length, 1, "partial usage still persisted");
 		assert.equal(ledgers.readSources()[0]!.extractions![0]!.stats, undefined, "never merged → no stats");
+		assert.equal(ledgers.readSources()[0]!.importFingerprint, undefined);
 	});
 });
 

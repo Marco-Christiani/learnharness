@@ -67,3 +67,4 @@ export * from "./custom-provider.ts";
 export { customProviderGet, customProviderMutation } from "./custom-provider-http.ts";
 
 export { notesSourceId, notesSyncStatus, type NotesSyncStatus } from "../core/notes-sync.ts";
+export { beginNotesImportRequest, cancelNotesImportRequest, validImportRequestId } from "./notes-import-requests.ts";
