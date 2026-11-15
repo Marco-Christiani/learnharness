@@ -19,7 +19,7 @@ function windowOptions(platform: string, env: Record<string, string> = {}, repor
 	class FakeWindow {
 		constructor(readonly options: unknown) {}
 		webContents = { on() {}, setWindowOpenHandler() {} };
-		loadURL() {}
+		async loadURL() {}
 		once() {}
 	}
 	const electron = {
@@ -49,7 +49,7 @@ describe("desktop development startup", () => {
 		class FakeWindow {
 			static getAllWindows() { return []; }
 			webContents = { on() {}, setWindowOpenHandler() {} };
-			loadURL(url: string) { loaded.push(url); }
+			async loadURL(url: string) { loaded.push(url); }
 			once() {}
 		}
 		const electron = {
@@ -101,7 +101,7 @@ describe("desktop appearance boot and IPC", () => {
 			background: string | undefined;
 			overlay: unknown;
 			constructor(readonly options: { backgroundColor: string; titleBarOverlay: unknown }) { windows.push(this); }
-			loadURL() {} once() {} isDestroyed() { return false; }
+			async loadURL() {} once() {} isDestroyed() { return false; }
 			setBackgroundColor(color: string) { this.background = color; }
 			setTitleBarOverlay(colors: unknown) { this.overlay = colors; }
 		}

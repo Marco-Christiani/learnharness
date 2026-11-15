@@ -115,7 +115,7 @@ function boot() {
 	});
 	class FakeWindow extends EventEmitter {
 		webContents = Object.assign(new EventEmitter(), { setWindowOpenHandler() {}, send() {}, getZoomFactor: () => 1 });
-		loadURL(url: string) { windows.push(url); }
+		async loadURL(url: string) { windows.push(url); }
 	}
 	const electron = {
 		app, BrowserWindow: FakeWindow, nativeTheme: { themeSource: "system" }, ipcMain: Object.assign(new EventEmitter(), { handle() {} }),
@@ -143,20 +143,20 @@ describe("real Electron main dev startup wiring", () => {
 		assert.equal(f.probes.length, 1); assert.equal(f.probes[0]!.url, "http://localhost:3000"); assert.deepEqual(f.windows, []);
 		f.ready(); await f.done;
 		assert.deepEqual(f.windows, ["http://localhost:3000"]); assert.deepEqual(f.exits, []);
-		assert.equal(f.app.listenerCount("before-quit"), 1, "only the existing server cleanup listener should remain");
+		assert.equal(f.app.listenerCount("before-quit"), 0, "startup quit listener is removed");
 	});
 	it("logs and exits unsuccessfully on readiness failure instead of creating an empty window", async () => {
 		const f = boot(); await delay(0); assert.equal(f.probes.length, 1);
 		f.fail(new Error("Development server http://localhost:3000 did not respond within 30000ms")); await f.done;
 		assert.deepEqual(f.windows, []); assert.deepEqual(f.exits, [1]);
 		assert.ok(f.logs.some(line => /dev server startup failed:.*did not respond within 30000ms/.test(line)));
-		assert.equal(f.app.listenerCount("before-quit"), 1);
+		assert.equal(f.app.listenerCount("before-quit"), 0);
 	});
 	it("user quit aborts startup without a new window or failure exit", async () => {
 		const f = boot(); await delay(0); assert.equal(f.probes.length, 1);
 		f.app.emit("before-quit"); await f.done;
 		assert.equal(f.probes[0]!.signal.aborted, true); assert.deepEqual(f.windows, []); assert.deepEqual(f.exits, []);
-		assert.equal(f.app.listenerCount("before-quit"), 1);
+		assert.equal(f.app.listenerCount("before-quit"), 0);
 	});
 	it("does not open a window if quit races the successful response", async () => {
 		const f = boot(); await delay(0); assert.equal(f.probes.length, 1);

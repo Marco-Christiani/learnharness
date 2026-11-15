@@ -403,7 +403,20 @@ function createWindow(url) {
 		return { action: "deny" };
 	});
 
-	void win.loadURL(url);
+	win.webContents.on("will-prevent-unload", (event) => {
+		const choice = dialog.showMessageBoxSync(win, {
+			type: "question", buttons: ["Keep open", "Leave and stop queued imports"],
+			defaultId: 0, cancelId: 0, title: "Imports are in progress",
+			message: "Leave LearnHarness while files are syncing?",
+			detail: "Pending files will need to be selected again. Completed extractions remain saved.",
+		});
+		if (choice === 1) event.preventDefault();
+	});
+	void win.loadURL(url).catch((error) => {
+		log(`Page load failed: ${error.message}`);
+		dialog.showErrorBox("LearnHarness could not load", `${error.message}\nRestart the development server and reopen the window.`);
+		win.show();
+	});
 	// Zoom truth reaches the renderer for EVERY load (reload, nav): the
 	// renderer's --lh-zoom must never go stale. The fallback catcher below
 	// covers ⌘= / layout variants the menu's ⌘Plus may not claim — menu-
@@ -672,7 +685,7 @@ async function main() {
 	});
 
 	// The child must not outlive us — cover every quit path.
-	app.on("before-quit", killServer);
+	app.on("will-quit", killServer);
 	process.on("exit", killServer);
 	process.on("SIGHUP", killServer);
 

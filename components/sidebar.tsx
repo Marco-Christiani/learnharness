@@ -7,7 +7,7 @@ import { NotesImportProgress } from "./notes-import";
 import { MenuShell } from "@/components/menu-shell";
 import { DeleteSessionDialog } from "@/components/delete-session-dialog";
 import type { ChatDeleteMode, ThemeMode } from "@/src/core";
-import { DumbbellIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, PlusIcon, SearchIcon, SettingsIcon } from "lucide-react";
+import { ArrowLeftIcon, DumbbellIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, PlusIcon, SearchIcon, SettingsIcon } from "lucide-react";
 import { ActivitySection } from "@/components/activity-dock";
 import { CoverageMenuBlock } from "@/components/extraction-coverage";
 import { LhMark } from "@/components/lh-mark";
@@ -685,6 +685,12 @@ function SessionsSidebar() {
 						>
 							<LhMark className="size-6" />
 						</Link>
+					</Hint>
+					<Hint label="Back">
+						<Button variant="ghost" size="icon" aria-label="Back" className="lh-no-drag"
+							onClick={() => { if (window.history.length > 1) router.back(); else router.push("/"); }}>
+							<ArrowLeftIcon className="size-4" />
+						</Button>
 					</Hint>
 					<Hint label="Close sidebar" action="toggle-sidebar">
 						<Button
