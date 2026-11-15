@@ -3,6 +3,7 @@ import { it } from "node:test";
 import { createNotesImportQueue } from "../components/notes-import-queue.ts";
 import { MAX_IMPORT_BYTES } from "../lib/notes-import-limits.ts";
 import type { NotesImportResult } from "../components/notes-import.tsx";
+const summary = ({ rows: _rows, paused: _paused, ...state }: ReturnType<ReturnType<typeof createNotesImportQueue>["getSnapshot"]>) => state;
 const tick = () => new Promise<void>((done) => setImmediate(done));
 const file = (name: string, path?: string) => { const f = new File(["notes"], name); if (path) Object.defineProperty(f, "webkitRelativePath", { value: path }); return f; };
 const success = (name: string): NotesImportResult => ({ requestIndex: 0, filePath: name, ok: true, outcome: "completed", stats: { nodes: 0 } });
@@ -92,7 +93,7 @@ it("the queue uploads every accepted extension, including the expanded text type
 	queue.append(names.map((name) => file(name)));
 	await tick();
 	assert.deepEqual(sent, names);
-	assert.deepEqual(queue.getSnapshot(), { importing: false, errors: [], notices: [], completion: 1 });
+	assert.deepEqual(summary(queue.getSnapshot()), { importing: false, errors: [], notices: [], completion: 1 });
 });
 
 it("the file type check comes before the size check", () => {
@@ -187,14 +188,14 @@ it("an all-skipped selection publishes completion without validation errors or u
 	Object.defineProperty(oversized, "size", { value: Number.MAX_SAFE_INTEGER });
 	queue.append([file("config", "Vault/.git/config"), file(".draft.md", "Vault/.draft.md"), oversized]);
 	assert.equal(publications, 1);
-	assert.deepEqual(queue.getSnapshot(), { importing: false, errors: [], notices: [], completion: 1 });
+	assert.deepEqual(summary(queue.getSnapshot()), { importing: false, errors: [], notices: [], completion: 1 });
 	await tick();
 	assert.deepEqual(paths, []);
 	assert.equal(publications, 1, "no asynchronous settlement for skipped files");
 	queue.append([file("notes.md")]);
 	await tick();
 	assert.deepEqual(paths, ["notes.md"]);
-	assert.deepEqual(queue.getSnapshot(), { importing: false, errors: [], notices: [], completion: 2 });
+	assert.deepEqual(summary(queue.getSnapshot()), { importing: false, errors: [], notices: [], completion: 2 });
 	unsubscribe();
 });
 
@@ -205,11 +206,11 @@ it("an all-skipped append does not complete or disturb an active import", async 
 	queue.append([file("notes.md")]);
 	queue.append([file("config", "Vault/.git/config"), file(".draft.md", "Vault/.draft.md")]);
 	assert.equal(calls, 1);
-	assert.deepEqual(queue.getSnapshot(), { importing: true, errors: [], notices: [], completion: 0 });
+	assert.deepEqual(summary(queue.getSnapshot()), { importing: true, errors: [], notices: [], completion: 0 });
 	resolve([success("notes.md")]);
 	await tick();
 	assert.equal(calls, 1);
-	assert.deepEqual(queue.getSnapshot(), { importing: false, errors: [], notices: [], completion: 1 });
+	assert.deepEqual(summary(queue.getSnapshot()), { importing: false, errors: [], notices: [], completion: 1 });
 });
 
 it("synchronous transport failures settle one wave once without reentrant pump recursion", async () => {
@@ -219,4 +220,33 @@ it("synchronous transport failures settle one wave once without reentrant pump r
 	await tick();
 	assert.equal(calls, 4); assert.equal(queue.getSnapshot().completion, 1); assert.equal(queue.getSnapshot().importing, false);
 	assert.equal(queue.getSnapshot().errors.length, 4);
+});
+
+it("pause holds pending files and canceled files never reach transport", async () => {
+	const sent: string[] = [];
+	const queue = createNotesImportQueue(async ([f]) => { sent.push(f!.name); return [success(f!.name)]; });
+	queue.pause();
+	queue.append([file("a.md"), file("b.md")]);
+	assert.deepEqual(sent, []);
+	assert.equal(queue.getSnapshot().paused, true);
+	await queue.cancel(0);
+	assert.equal(queue.getSnapshot().rows[0]!.status, "canceled");
+	queue.resume(); await tick();
+	assert.deepEqual(sent, ["b.md"]);
+	assert.deepEqual(queue.getSnapshot().rows.map((row) => row.status), ["canceled", "completed"]);
+	assert.equal(queue.getSnapshot().completion, 1);
+});
+
+it("stopping an active file uses its full path and awaits the server outcome", async () => {
+	let finish!: (results: NotesImportResult[]) => void;
+	const stopped: string[] = [];
+	const queue = createNotesImportQueue(async () => new Promise((resolve) => { finish = resolve; }), async (path) => { stopped.push(path); });
+	queue.append([file("notes.md", "Course/Week/notes.md")]);
+	await queue.cancel(0);
+	assert.deepEqual(stopped, ["Course/Week/notes.md"]);
+	assert.equal(queue.getSnapshot().rows[0]!.status, "extracting");
+	finish([{ ...success("Course/Week/notes.md"), ok: false, outcome: "aborted", error: "Stopped" }]);
+	await tick();
+	assert.equal(queue.getSnapshot().rows[0]!.status, "failed");
+	assert.equal(queue.getSnapshot().importing, false);
 });

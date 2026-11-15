@@ -43,13 +43,16 @@ File tools are read-only but have broad filesystem access under the server's use
 
 ## Extract into the graph
 
-For lessons, attach material to a session instead. Use the graph's **Extract files… → Files** or **Folder** picker for Markdown, plain text, or PDFs. This is a separate import flow, not the session's path attachments. Extract files accepts `.txt`, `.md`, `.markdown`, `.rst`, `.org`, `.adoc`, `.tex` and `.pdf` (any letter case); other extensions are turned away with a short message. Each supported file is uploaded for processing; folders organize imported sources.
+Use the graph's **Sync files… → Files** or **Folder** picker to select material. The review screen lists full relative paths and lets you choose individual files, add a destination folder, and exclude paths. Exclusions match comma-separated path fragments, ignoring letter case. `*` matches any text.
 
-- Files are limited to **25 MiB each**. Imports queue independently, with up to three files in flight.
-- Within the accepted extensions, PDFs are recognized by their `%PDF-` header and converted locally, without OCR. Image-only pages are skipped and counted; scanner text can be inaccurate. Check the import's notices.
-- Other files are read as UTF-8. A zero byte in the first 8 KiB causes rejection before source registration or model calls. This catches many binary files renamed to `.txt`, but is not complete binary detection; UTF-16 text is not decoded correctly and is often rejected. Save text as UTF-8.
-- Imported text then goes through model-based proposition/chain extraction. Local PDF conversion does not make the whole import offline.
-- Completed chunks survive later failures. Retry is explicit and reprocesses the file; unchanged content is not automatically skipped. The file queue does not survive a page reload.
+Choose **Check changes** to preview each selected file. The preview converts PDFs locally and compares text fingerprints without calling a model or changing the graph. **Sync** extracts new, changed, and unverified files. A completed import records a SHA-256 fingerprint, which lets subsequent imports skip identical text at the same path. Existing records without that fingerprint need one extraction to establish a baseline.
+
+- Supported extensions are `.txt`, `.md`, `.markdown`, `.rst`, `.org`, `.adoc`, `.tex`, and `.pdf`, ignoring letter case. Each file has a 25 MiB limit. Folder imports exclude hidden entries below the selected root.
+- PDFs are recognized by their `%PDF-` header and converted locally, without OCR. Image-only pages are skipped and counted. Check the import's notices for scanner errors.
+- Other files are read as UTF-8. A zero byte in the first 8 KiB causes rejection before source registration or model calls. Save text as UTF-8.
+- Up to three files extract concurrently. **Sync progress** shows full paths and per-file status. **Pause queue** holds pending files while active extractions continue. Pending files can be canceled individually. **Stop** requests cancellation of an active extraction.
+- Completed chunks and usage survive later failures. A failed or canceled import records no completion fingerprint, so selecting it again retries extraction. Changed files run through the merger, which retains existing claims.
+- Fingerprints survive server restarts. The pending file queue lives in the current page, so select the folder again after restarting. Completed, unchanged files skip extraction. Leaving the page while imports are queued prompts for confirmation.
 
 The graph stores propositions and reasoning chains with source provenance, **not mastery scores**. A proposition's presence is not proof that you understood or retained it. Automatic session extraction can be disabled independently of graph rendering.
 

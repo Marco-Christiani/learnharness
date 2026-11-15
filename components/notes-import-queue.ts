@@ -15,18 +15,21 @@ const unsupportedSummary = (extensions: readonly string[]): string =>
 	`Skipped ${extensions.length} ${extensions.length === 1 ? "file that isn't" : "files that aren't"} text, Markdown, or PDF (${[...new Set(extensions)].join(", ")}).`;
 const unsafeSummary = (count: number): string =>
 	`Skipped ${count} ${count === 1 ? "file with a name" : "files with names"} the import can't use (e.g. a ':' in the name).`;
+export interface ImportQueueRow { index: number; path: string; status: "pending" | "extracting" | "completed" | "failed" | "canceled"; }
 export interface ImportQueueSnapshot {
+	paused: boolean;
+	rows: ImportQueueRow[];
 	importing: boolean;
 	errors: string[];
 	notices: string[];
 	completion: number;
 }
-export const EMPTY_IMPORT_QUEUE: ImportQueueSnapshot = { importing: false, errors: [], notices: [], completion: 0 };
+export const EMPTY_IMPORT_QUEUE: ImportQueueSnapshot = { importing: false, errors: [], notices: [], completion: 0, paused: false, rows: [] };
 
-/** PR198's refill-on-completion, one-request-per-file transport, extended to
- * accept later selections. One instance per page, NOT three workers per click.
- * Only pending/in-flight Files are retained; no retry or persisted upload queue. */
-export function createNotesImportQueue(post: (files: readonly File[]) => Promise<NotesImportResult[]>) {
+/** Three workers share a pausable queue. Completed rows retain paths and status. */
+export function createNotesImportQueue(post: (files: readonly File[]) => Promise<NotesImportResult[]>, stop?: (path: string) => Promise<void>) {
+	let paused = false;
+	const rows = new Map<number, ImportQueueRow>();
 	const listeners = new Set<() => void>();
 	const pending: { file: File; index: number }[] = [];
 	const failures = new Map<number, string>();
@@ -35,24 +38,27 @@ export function createNotesImportQueue(post: (files: readonly File[]) => Promise
 	let snapshot = EMPTY_IMPORT_QUEUE;
 	const ordered = (map: Map<number, string>) => [...map].sort(([a], [b]) => a - b).map(([, text]) => text);
 	const publish = (completed = false) => {
-		snapshot = { importing: active > 0 || pending.length > 0, errors: ordered(failures), notices: ordered(notices), completion: snapshot.completion + Number(completed) };
+		snapshot = { paused, rows: [...rows.values()].map((row) => ({ ...row })), importing: active > 0 || pending.length > 0, errors: ordered(failures), notices: ordered(notices), completion: snapshot.completion + Number(completed) };
 		for (const listener of [...listeners]) listener();
 	};
 	// Normalize a synchronously throwing transport to the same async settlement.
 	const send = async (file: File) => post([file]);
 	function pump(): void {
-		while (active < 3 && pending.length > 0) {
+		while (!paused && active < 3 && pending.length > 0) {
 			const { file, index } = pending.shift()!;
+			rows.get(index)!.status = "extracting";
 			active++;
 			void (async () => {
 				try {
 					const [r] = await send(file);
 					if (!r) throw new Error("Invalid import response. Check the graph before retrying.");
+					rows.get(index)!.status = r.ok ? "completed" : "failed";
 					if (!r.ok) {
 						const details = [r.provider, r.missing?.join(", "), r.slots?.join(", ")].filter(Boolean);
 						failures.set(index, `${r.filePath}: ${r.error}${r.code ? `\n${[r.code, ...details].join(" — ")}` : ""}`);
 					} else if (r.notice) notices.set(index, `${r.filePath}: ${r.notice}`);
 				} catch (error) {
+					rows.get(index)!.status = "failed";
 					// Never retry an ambiguous response: the merge may have committed.
 					failures.set(index, `${notesPath(file)}: ${error instanceof Error ? error.message : String(error)}`);
 				} finally {
@@ -64,11 +70,26 @@ export function createNotesImportQueue(post: (files: readonly File[]) => Promise
 		}
 	}
 	return {
+		pause() { paused = true; publish(); },
+		resume() { paused = false; pump(); publish(); },
+		async cancel(index: number) {
+			const row = rows.get(index);
+			if (!row) return;
+			if (row.status === "pending") {
+				const position = pending.findIndex((item) => item.index === index);
+				if (position >= 0) pending.splice(position, 1);
+				row.status = "canceled";
+				publish(active === 0 && pending.length === 0);
+			} else if (row.status === "extracting" && stop) {
+				try { await stop(row.path); }
+				catch (error) { failures.set(index, `${row.path}: ${error instanceof Error ? error.message : String(error)}`); publish(); }
+			}
+		},
 		getSnapshot: () => snapshot,
 		subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
 		append(files: readonly File[]) {
 			if (files.length === 0) return;
-			if (!snapshot.importing) { failures.clear(); notices.clear(); sequence = 0; }
+			if (!snapshot.importing) { failures.clear(); notices.clear(); rows.clear(); sequence = 0; }
 			// Unsafe names and unsupported types are summed up per pick; each summary sits where its first file was.
 			const unsafe: number[] = [], unsupported: { index: number; extension: string }[] = [];
 			for (const file of files) {
@@ -78,7 +99,7 @@ export function createNotesImportQueue(post: (files: readonly File[]) => Promise
 				if (!validNotesPath(path, file.name)) unsafe.push(index);
 				else if (!IMPORT_EXTENSIONS.test(file.name)) unsupported.push({ index, extension: extensionLabel(file.name) });
 				else if (file.size > MAX_IMPORT_BYTES) failures.set(index, `${path}: Too big. Max 25 MB.`);
-				else pending.push({ file, index });
+				else { rows.set(index, { index, path, status: "pending" }); pending.push({ file, index }); }
 			}
 			if (unsafe.length > 0) failures.set(unsafe[0]!, unsafeSummary(unsafe.length));
 			if (unsupported.length > 0) failures.set(unsupported[0]!.index, unsupportedSummary(unsupported.map(({ extension }) => extension)));

@@ -3,9 +3,10 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ChangeEvent } from "react";
 import { WaypointsIcon } from "lucide-react";
 import { Hint } from "@/components/ui/hint";
+import { NotesImportReview } from "./notes-import-review";
 import { IMPORT_ACCEPT } from "@/lib/notes-import-limits.ts";
 import { useInteractionLayer, useInteractionLayers } from "@/components/interaction-layers";
-import { INTERACTION_LAYER_Z_BASE } from "@/components/host-dialog";
+import { HostDialog, INTERACTION_LAYER_Z_BASE } from "@/components/host-dialog";
 import { createNotesImportQueue, EMPTY_IMPORT_QUEUE, notesPath } from "./notes-import-queue";
 
 export { MAX_IMPORT_BYTES } from "@/lib/notes-import-limits.ts";
@@ -17,6 +18,7 @@ export interface NotesImportResult {
 	filePath: string;
 	ok: boolean;
 	outcome: "completed" | "failed" | "partial" | "aborted" | "busy";
+	syncStatus?: "new" | "changed" | "unchanged" | "unverified";
 	stats?: { nodes: number; chains?: number; droppedChains?: number };
 	error?: string;
 	code?: string;
@@ -26,8 +28,7 @@ export interface NotesImportResult {
 	notice?: string;
 }
 
-/** Contributor's strict attribution: validate the complete response before
- * applying any row, even when several files have identical basenames. */
+/** Validate every response row against its request index and full path. */
 export function parseNotesImportResults(body: unknown, files: readonly File[]): NotesImportResult[] {
 	const invalid = () => new Error("Invalid import response. Check the graph before retrying.");
 	if (!body || typeof body !== "object" || !("results" in body) || !Array.isArray(body.results) || body.results.length !== files.length) throw invalid();
@@ -47,8 +48,9 @@ export function parseNotesImportResults(body: unknown, files: readonly File[]): 
 	return body.results as NotesImportResult[];
 }
 
-export async function postNotesImport(files: readonly File[]): Promise<NotesImportResult[]> {
+export async function postNotesImport(files: readonly File[], preview = false): Promise<NotesImportResult[]> {
 	const form = new FormData();
+	if (preview) form.append("preview", "true");
 	for (const file of files) {
 		form.append("files", file);
 		form.append("paths", notesPath(file));
@@ -61,12 +63,40 @@ export async function postNotesImport(files: readonly File[]): Promise<NotesImpo
 		const detail = body && typeof body === "object" && "error" in body && typeof body.error === "string" ? `: ${body.error}` : "";
 		throw new Error(`Import request failed (HTTP ${response.status})${detail}${/[.!?]$/.test(detail) ? "" : "."} Check the graph before retrying.`);
 	}
-	return parseNotesImportResults(body, files);
+	const results = parseNotesImportResults(body, files);
+	if (preview && results.some((result) => result.ok && !["new", "changed", "unchanged", "unverified"].includes(result.syncStatus ?? ""))) throw new Error("Invalid sync preview response.");
+	return results;
 }
 
 // Client module singleton: shared by both home views and successive selections.
 // SSR never appends Files, and uses the immutable empty server snapshot.
-const pageImportQueue = createNotesImportQueue(postNotesImport);
+async function stopNotesImport(path: string) {
+	const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(path));
+	const id = `src_${Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 12)}`;
+	const response = await fetch("/api/activity/abort", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "extraction", id }) });
+	if (!response.ok) throw new Error("Could not stop extraction. Try again.");
+}
+const pageImportQueue = createNotesImportQueue(postNotesImport, stopNotesImport);
+
+export function NotesImportProgress() {
+	const snapshot = useSyncExternalStore(pageImportQueue.subscribe, pageImportQueue.getSnapshot, () => EMPTY_IMPORT_QUEUE);
+	const [open, setOpen] = useState(false);
+	useEffect(() => {
+		if (!snapshot.importing) return;
+		const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+		window.addEventListener("beforeunload", guard);
+		return () => window.removeEventListener("beforeunload", guard);
+	}, [snapshot.importing]);
+	if (!snapshot.rows.length) return null;
+	return <div className="fixed bottom-4 left-4 z-50 rounded-lg border bg-card shadow-lg">
+		<button className="p-2 text-xs" onClick={() => setOpen(!open)}>Sync progress ({snapshot.rows.filter((row) => row.status === "completed").length}/{snapshot.rows.length})</button>
+		<HostDialog open={open} onClose={() => { setOpen(false); return "closed"; }} aria-label="Sync progress" frame={<div className="max-h-[75vh] w-[min(90vw,48rem)] overflow-auto rounded border bg-card p-4 shadow-xl" />}>
+			<div className="flex justify-between text-sm"><button onClick={() => snapshot.paused ? pageImportQueue.resume() : pageImportQueue.pause()}>{snapshot.paused ? "Resume queue" : "Pause queue"}</button><button onClick={() => setOpen(false)}>Close progress</button></div>
+			<p className="py-2 text-xs text-muted-foreground">Pause holds pending files. Stop cancels an active extraction. Earlier merges remain saved.</p>
+			{snapshot.rows.map((row) => <div key={row.index} className="flex items-start gap-2 border-t py-2 text-xs"><span className="min-w-0 flex-1 whitespace-pre-wrap break-all">{row.path}</span><span>{row.status}</span>{(row.status === "pending" || row.status === "extracting") && <button onClick={() => void pageImportQueue.cancel(row.index)}>{row.status === "pending" ? "Cancel" : "Stop"}</button>}</div>)}
+		</HostDialog>
+	</div>;
+}
 export function useNotesImport(callbacks: { onStart?: () => void; onFinish?: () => void } = {}) {
 	const snapshot = useSyncExternalStore(pageImportQueue.subscribe, pageImportQueue.getSnapshot, () => EMPTY_IMPORT_QUEUE);
 	const latest = useRef(callbacks);
@@ -80,7 +110,7 @@ export function useNotesImport(callbacks: { onStart?: () => void; onFinish?: () 
 	}, [snapshot.completion]);
 	return {
 		errors: snapshot.errors, notices: snapshot.notices, importing: snapshot.importing,
-		onImportFiles: (files: FileList | null) => {
+		onImportFiles: (files: FileList | readonly File[] | null) => {
 			if (!files || files.length === 0) return;
 			latest.current.onStart?.();
 			pageImportQueue.append(Array.from(files));
@@ -88,15 +118,15 @@ export function useNotesImport(callbacks: { onStart?: () => void; onFinish?: () 
 	};
 }
 
-/** PR198's shared Files / Folder native picker. Unlike the donor, it remains
- * available while work is running; later selections join the SAME queue. */
-export function NotesImportControl({ importing, onImportFiles }: { importing: boolean; onImportFiles: (files: FileList | null) => void }) {
+/** Files and folders are reviewed before entering the extraction queue. */
+export function NotesImportControl({ importing, onImportFiles }: { importing: boolean; onImportFiles: (files: FileList | readonly File[] | null) => void }) {
 	const filesRef = useRef<HTMLInputElement>(null);
 	const folderRef = useRef<HTMLInputElement>(null);
 	const [open, setOpen] = useState(false);
+	const [reviewFiles, setReviewFiles] = useState<File[]>([]);
 	const hintId = useId();
 	const onChange = (event: ChangeEvent<HTMLInputElement>) => {
-		onImportFiles(event.target.files);
+		setReviewFiles(Array.from(event.target.files ?? []));
 		event.target.value = "";
 	};
 	const rootRef = useRef<HTMLDivElement>(null);
@@ -106,6 +136,8 @@ export function NotesImportControl({ importing, onImportFiles }: { importing: bo
 		onClose: () => { setOpen(false); return "closed"; } });
 	const choices = [["Files", filesRef], ["Folder", folderRef]] as const;
 	return (
+		<>
+		{reviewFiles.length > 0 && <NotesImportReview files={reviewFiles} onClose={() => setReviewFiles([])} onConfirm={onImportFiles} />}
 		<div ref={rootRef} className="relative shrink-0 rounded-xl border bg-card/85 px-1 py-[3px] shadow-lg backdrop-blur"
 			onBlur={(event) => { if (interactions.isElementEligible(panelRef.current) && !event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}>
 			<input ref={filesRef} type="file" multiple accept={IMPORT_ACCEPT} className="hidden" onChange={onChange} />
@@ -113,7 +145,7 @@ export function NotesImportControl({ importing, onImportFiles }: { importing: bo
 			<Hint label="Extract files into the graph" side="bottom">
 				<button type="button" onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="menu" data-testid="import-notes"
 					className="flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent">
-					<WaypointsIcon className="size-3" />{importing ? "Extracting…" : "Extract files…"}
+					<WaypointsIcon className="size-3" />{importing ? "Extracting…" : "Sync files…"}
 				</button>
 			</Hint>
 			{open && (
@@ -124,6 +156,7 @@ export function NotesImportControl({ importing, onImportFiles }: { importing: bo
 				</div>
 			)}
 		</div>
+		</>
 	);
 }
 

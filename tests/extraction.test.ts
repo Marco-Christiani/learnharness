@@ -1687,33 +1687,36 @@ describe("the notes front door (importNotes — format-agnostic)", () => {
 		assert.equal(ledgers.readCoverage().length, 0, "nothing checkpointed — the messages stay re-runnable");
 	});
 
-	it("every explicit import runs the whole file, even identical text and legacy fingerprints", async () => {
+	it("completed imports skip unchanged text across pipeline instances and process changed text", async () => {
 		const ledgers = memoryLedgers();
-		const mk = () =>
-			createExtractionPipeline({
-				chatStore,
-				graphStore: ledgers,
-					extractor: submitModel("submit_findings", NOTES_FINDINGS),
-				auditor: submitModel("submit_review", NOTES_VERDICT),
-			});
-		const first = await mk().importNotes({ filePath: "/vault/learn vim.md", text: NOTES_TEXT });
-		assert.deepEqual(first, { nodes: 1, chains: 0 });
+		let calls = 0;
+		const mk = () => createExtractionPipeline({
+			chatStore, graphStore: ledgers,
+			engineFor: (role) => {
+				calls++;
+				return role === "extractor" ? submitModel("submit_findings", NOTES_FINDINGS) : submitModel("submit_review", NOTES_VERDICT);
+			},
+		});
+		const input = { filePath: "/vault/learn vim.md", text: NOTES_TEXT };
+		assert.deepEqual(await mk().importNotes(input), { nodes: 1, chains: 0 });
+		const afterFirst = calls;
+		const before = ledgers.readSources();
+		assert.deepEqual(await mk().importNotes(input), { nodes: 0, chains: 0 });
+		assert.equal(calls, afterFirst);
+		assert.deepEqual(ledgers.readSources(), before);
+		assert.equal(before[0]!.importFingerprint, createHash("sha256").update(NOTES_TEXT).digest("hex"));
+		assert.deepEqual(await mk().importNotes({ ...input, text: `${NOTES_TEXT}\nA new closing line.` }), { nodes: 1, chains: 0 });
+		assert.equal(ledgers.readSources()[0]!.extractions?.length, 2);
+	});
 
-		// A legacy stamp must never suppress an explicit import.
-		ledgers.upsertSource({ ...ledgers.readSources()[0]!, contentFp: createHash("sha256").update(NOTES_TEXT).digest("hex").slice(0, 16) });
-		const second = await mk().importNotes({ filePath: "/vault/learn vim.md", text: NOTES_TEXT });
-		assert.deepEqual(second, { nodes: 1, chains: 0 }, "identical content re-extracts");
-		assert.equal(ledgers.readSources()[0]!.contentFp, undefined, "new imports write no fingerprint");
-
-		assert.equal(ledgers.readSources().length, 1, "one source identity — the path hashes to the same id");
-		assert.equal(ledgers.readSources()[0]!.extractions?.length, 2, "both runs bill usage");
-		assert.equal(ledgers.readNodes().length, 2, "the auditor, not a content skip, owns identity");
-
-		// Changed text also re-runs the whole file.
-		const third = await mk().importNotes({ filePath: "/vault/learn vim.md", text: `${NOTES_TEXT}\nA new closing line.` });
-		assert.deepEqual(third, { nodes: 1, chains: 0 }, "changed content re-extracts");
-		assert.equal(ledgers.readSources()[0]!.extractions?.length, 3, "the re-run bills its usage");
-		assert.equal(ledgers.readNodes().length, 3);
+	it("legacy fingerprints do not establish a completed import", async () => {
+		const ledgers = memoryLedgers();
+		const filePath = "/vault/legacy.md";
+		const id = `src_${createHash("sha256").update(filePath).digest("hex").slice(0, 12)}`;
+		ledgers.upsertSource({ id, filePath, importedAt: "2026-01-01", contentFp: createHash("sha256").update(NOTES_TEXT).digest("hex").slice(0, 16) });
+		const pipeline = createExtractionPipeline({ chatStore, graphStore: ledgers,
+			extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT) });
+		assert.deepEqual(await pipeline.importNotes({ filePath, text: NOTES_TEXT }), { nodes: 1, chains: 0 });
 	});
 
 	it("aborts like a chat run: true cancellation, nothing merged, partial usage in the source record", async () => {
@@ -2503,6 +2506,15 @@ describe("notes import completion and retry reliability", () => {
 		return true;
 	};
 
+	it("failed changed content clears completion before a later retry", async () => {
+		const ledgers = memoryLedgers();
+		await make(ledgers).importNotes(input);
+		await assert.rejects(make(ledgers, silentModel()).importNotes({ ...input, text: `${input.text}\nChanged text.` }), incomplete("failed", 0));
+		assert.equal(ledgers.readSources()[0]!.importFingerprint, undefined);
+		assert.deepEqual(await make(ledgers).importNotes(input), { nodes: 1, chains: 0 });
+		assert.equal(ledgers.readSources()[0]!.extractions?.length, 3);
+	});
+
 	it("failure followed by an unchanged retry really extracts and preserves both usage records", async () => {
 		const ledgers = memoryLedgers();
 		await assert.rejects(make(ledgers, silentModel()).importNotes(input), incomplete("failed", 0));
@@ -2621,8 +2633,8 @@ describe("notes import completion and retry reliability", () => {
 			assert.deepEqual(ledgers.readSources(), sourceBefore);
 		} finally { release(); }
 		await first;
-		assert.deepEqual(await make(ledgers).importNotes(input), { nodes: 1, chains: 0 }, "lock released after lifecycle");
-		assert.equal(ledgers.readSources()[0]!.extractions?.length, 2);
+		assert.deepEqual(await make(ledgers).importNotes(input), { nodes: 0, chains: 0 }, "completed content skips after lock release");
+		assert.equal(ledgers.readSources()[0]!.extractions?.length, 1);
 	});
 
 	it("a fulfilled zero-node chunk plus a failed chunk is partial, not failed or completed", async () => {
@@ -2668,12 +2680,12 @@ describe("notes import completion and retry reliability", () => {
 		await make(ledgers).importNotes(input);
 	});
 
-	for (const filePath of ["1.md", "1.1.md", "1 notes.md", "1.1 notes.md"]) it(`imports and repeats identical text for ${filePath}`, async () => {
+	for (const filePath of ["1.md", "1.1.md", "1 notes.md", "1.1 notes.md"]) it(`imports and skips identical text for ${filePath}`, async () => {
 		const ledgers = memoryLedgers();
 		await make(ledgers).importNotes({ ...input, filePath });
 		await make(ledgers).importNotes({ ...input, filePath });
 		assert.equal(ledgers.readSources().length, 1);
-		assert.equal(ledgers.readSources()[0]!.extractions?.length, 2);
-		assert.equal(ledgers.readNodes().length, 2);
+		assert.equal(ledgers.readSources()[0]!.extractions?.length, 1);
+		assert.equal(ledgers.readNodes().length, 1);
 	});
 });

@@ -1,26 +1,7 @@
-/**
- * POST /api/graph/import — the format-agnostic front door's transport
- * (vision §1, 2026-09-13): raw personal-notes files in, one extraction run
- * per file through the SAME pipeline the sessions use. Multipart form data
- * (field "files"); the pipeline mints a deterministic source id per file
- * path, persists the source record (the file's provenance + the run's usage),
- * and runs
- * extractor → auditor → merger over the raw text.
- *
- * Only filename extensions listed in lib/notes-import-limits.ts are taken.
- * Among those files, a PDF (spotted by its %PDF- header) is converted to
- * Markdown first. Other files are decoded as UTF-8 unless a zero byte in
- * their first 8 KiB causes refusal. This is a binary-file heuristic, not
- * complete text or encoding validation. These refusals, and PDFs with
- * nothing to extract, occur before any source record or model call.
- *
- * Small concurrency cap: the model calls are the slow part, and a burst of
- * 25 simultaneous runs would trip provider rate limits — a 3-wide worker
- * pool keeps the run registry (the dock's status chips) and the ledgers
- * healthy. The dock's chips + graph refetch track progress live through
- * /api/graph/status, as with session runs.
- */
-import { convertPdf, extraction, joinPages, NotesImportError, sourceDirectory } from "@/src/server";
+import { notesSourceId, notesSyncStatus, type NotesSyncStatus } from "@/src/server";
+
+/** Validate uploaded notes, preview sync status, or extract selected files. */
+import { convertPdf, extraction, joinPages, NotesImportError, sourceDirectory, stores } from "@/src/server";
 import { IMPORT_EXTENSIONS, MAX_IMPORT_BODY_BYTES, MAX_IMPORT_BYTES, UNSUPPORTED_TYPE_MESSAGE, validNotesPath } from "@/lib/notes-import-limits.ts";
 import { FormBodyLimitError, readBoundedFormData } from "@/lib/bounded-form-data.ts";
 import {
@@ -39,10 +20,9 @@ interface ImportResult {
 	filePath: string;
 	ok: boolean;
 	stats?: EmissionStats;
+	syncStatus?: NotesSyncStatus;
 	error?: string;
-	/** The machine discriminator when ok:false is a config refusal — the
-	 * BYOK models refusal (owner, 2026-09-22) or the provider-key refusal
-	 * (2026-09-25); the client can open the setup/keys flow off it. */
+	/** Configuration failures expose the settings fields that need attention. */
 	code?: "models_not_configured" | (typeof PROVIDER_KEY_MISSING_CODE);
 	missing?: string[];
 	/** The key-refusal specifics (provider_key_missing only). */
@@ -99,7 +79,7 @@ export async function POST(request: Request) {
 		return Response.json({ results: [] as ImportResult[], error: "no files" }, { status: 400 });
 	}
 
-	// PR198: folder-relative identity, matched to either browser filename form.
+	// Folder-relative paths identify sources.
 	// Validate every path before conversions, metadata writes, or model calls.
 	const suppliedPaths = form.getAll("paths");
 	if (suppliedPaths.length > 0 && (suppliedPaths.length !== files.length || suppliedPaths.some((p) => typeof p !== "string"))) {
@@ -109,6 +89,7 @@ export async function POST(request: Request) {
 	if (files.some((file, i) => !validNotesPath(paths[i]!, file.name))) {
 		return Response.json({ results: [], error: "Import contains an unsafe or mismatched relative path" }, { status: 400 });
 	}
+	const preview = form.get("preview") === "true";
 	const results: ImportResult[] = [];
 	const queue = files.map((file, requestIndex) => ({ file, requestIndex, filePath: paths[requestIndex]! }));
 	const workers = Array.from({ length: Math.min(3, files.length) }, async () => {
@@ -122,9 +103,15 @@ export async function POST(request: Request) {
 					results.push({ filePath, requestIndex, outcome: "failed", ok: false, error: notes.error });
 					continue;
 				}
+				const source = stores.graphStore.readSources().find((entry) => entry.id === notesSourceId(filePath));
+				const syncStatus = notesSyncStatus(source, notes.text);
+				if (preview) {
+					results.push({ filePath, requestIndex, outcome: "completed", ok: true, stats: { nodes: 0, chains: 0 }, syncStatus, ...(notes.notice ? { notice: notes.notice } : {}) });
+					continue;
+				}
 				sourceDirectory.registerImport(filePath);
 				const stats = await extraction.importNotes({ filePath, text: notes.text });
-				results.push({ filePath, requestIndex, outcome: "completed", ok: true, stats, ...(notes.notice ? { notice: notes.notice } : {}) });
+				results.push({ filePath, requestIndex, outcome: "completed", ok: true, stats, syncStatus, ...(syncStatus === "unchanged" ? { notice: "Unchanged. Skipped extraction." } : notes.notice ? { notice: notes.notice } : {}) });
 			} catch (err) {
 				if (err instanceof ModelsNotConfiguredError) {
 					results.push({ filePath, ok: false, requestIndex, outcome: "failed", error: err.envelope.error,
@@ -138,7 +125,7 @@ export async function POST(request: Request) {
 						...(err instanceof NotesImportError ? { stats: err.partialStats } : {}),
 						error: err instanceof Error ? err.message : String(err) });
 				}
-			} finally { emit("sources-changed", {}); }
+			} finally { if (!preview) emit("sources-changed", {}); }
 		}
 	});
 	await Promise.all(workers);

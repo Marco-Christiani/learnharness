@@ -57,7 +57,7 @@ it("route keeps three-worker batching, request positions and mixed per-file outc
 	assert.equal(key.code, "provider_key_missing"); assert.equal(key.provider, "openai"); assert.deepEqual(key.slots, ["cheap"]);
 });
 
-it("real route plus in-memory ledgers and faux stages reprocess identical imports for all four filename cases", async () => {
+it("real route plus in-memory ledgers and faux stages skip identical imports for all four filename cases", async () => {
 	const nodes: GraphNode[] = [];
 	const chains: GraphChain[] = [];
 	const checkpoints: SessionCheckpoint[] = [];
@@ -94,10 +94,10 @@ it("real route plus in-memory ledgers and faux stages reprocess identical import
 		assert.equal(results.length, 4);
 		assert.ok(results.every((r: { ok: boolean; outcome: string }) => r.ok && r.outcome === "completed"));
 	}
-	assert.equal(calls, 8, "repeat identical imports execute real faux extractor calls");
-	assert.equal(nodes.length, 8);
+	assert.equal(calls, 4, "repeat identical imports skip extractor calls");
+	assert.equal(nodes.length, 4);
 	assert.equal(sources.size, 4);
-	assert.ok([...sources.values()].every((source) => source.extractions?.length === 2 && source.contentFp === undefined));
+	assert.ok([...sources.values()].every((source) => source.extractions?.length === 1 && source.importFingerprint?.length === 64));
 });
 
 it("route returns 400 without files", async () => {
@@ -299,4 +299,22 @@ it("malformed or proxy-truncated multipart is refused before any file enters the
 		assert.deepEqual(await response.json(), { results: [], error: "Could not read the upload. It may be incomplete; please select the files again." });
 	}
 	assert.equal(calls, 0);
+});
+
+it("sync preview classifies content without extraction or source registration", async () => {
+	const readSources = stores.graphStore.readSources;
+	const register = sourceDirectory.registerImport;
+	const { notesSourceId, notesFingerprint } = await import("../src/core/notes-sync.ts");
+	const source = (filePath: string, fingerprint?: string): NotesSource => ({ id: notesSourceId(filePath), filePath, importedAt: "2026-01-01", ...(fingerprint ? { importFingerprint: fingerprint } : {}) });
+	stores.graphStore.readSources = () => [source("unchanged.md", notesFingerprint("identical text")), source("changed.md", notesFingerprint("old text")), source("legacy.md")];
+	extraction.importNotes = async () => { throw new Error("preview must not extract"); };
+	sourceDirectory.registerImport = () => { throw new Error("preview must not register"); };
+	try {
+		const form = new FormData(); form.set("preview", "true");
+		for (const name of ["new.md", "unchanged.md", "changed.md", "legacy.md"]) form.append("files", new File(["identical text"], name));
+		const response = await POST(new Request("http://localhost/api/graph/import", { method: "POST", body: form }));
+		const { results } = await response.json();
+		assert.deepEqual(results.sort((a: { requestIndex: number }, b: { requestIndex: number }) => a.requestIndex - b.requestIndex).map((row: { syncStatus: string }) => row.syncStatus), ["new", "unchanged", "changed", "unverified"]);
+		assert.ok(results.every((row: { ok: boolean }) => row.ok));
+	} finally { stores.graphStore.readSources = readSources; sourceDirectory.registerImport = register; }
 });

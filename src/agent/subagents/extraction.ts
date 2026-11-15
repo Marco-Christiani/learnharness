@@ -1,3 +1,4 @@
+import { notesFingerprint } from "../../core/notes-sync.ts";
 import * as crypto from "node:crypto";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
@@ -1406,17 +1407,22 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		}
 	}
 
-	/** Every explicit import processes the whole file. Identity, source digest,
-	 * auditor and usage history remain source-scoped; this is not exactly-once. */
+	/** Completed imports skip identical text under the same source path. */
 	async function importNotes(input: NotesImportInput): Promise<EmissionStats> {
 		const id = `src_${crypto.createHash("sha256").update(input.filePath).digest("hex").slice(0, 12)}`;
 		// Acquire BEFORE source upsert: overlapping contents must not alter metadata.
 		if (inFlight.has(id)) throw new NotesImportError("busy", { nodes: 0, chains: 0 }, "This file is already being imported. Try again when it finishes.");
 		inFlight.add(id);
 		try {
+			const importFingerprint = notesFingerprint(input.text);
+			const previous = graphStore.readSources().find((source) => source.id === id);
+			if (previous?.importFingerprint === importFingerprint) return { nodes: 0, chains: 0 };
 			const importedAt = new Date().toISOString();
+			// Clear completion before extraction because a failed run can retain merges.
 			graphStore.upsertSource({ id, filePath: input.filePath, importedAt });
-			return await runNotesExtraction({ id, ...input, importedAt });
+			const stats = await runNotesExtraction({ id, ...input, importedAt });
+			graphStore.upsertSource({ id, filePath: input.filePath, importedAt, importFingerprint });
+			return stats;
 		} catch (err) {
 			if (err instanceof NotesImportError || err instanceof ModelsNotConfiguredError || err instanceof ProviderKeyMissingError) throw err;
 			throw new NotesImportError("failed", { nodes: 0, chains: 0 }, err instanceof Error ? err.message : String(err), { cause: err });

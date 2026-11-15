@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { NotesImportProgress } from "./notes-import";
 import { MenuShell } from "@/components/menu-shell";
 import { DeleteSessionDialog } from "@/components/delete-session-dialog";
 import type { ChatDeleteMode, ThemeMode } from "@/src/core";
@@ -962,6 +963,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 				{/* The single document-level keydown listener (keyboard wave A) —
 				    after the content in the tree, but it's window-level so order only
 				    matters for the events it dispatches, never for DOM priority. */}
+				<NotesImportProgress />
 				<KeyboardShortcuts />
 				<PluginWidgets />
 			</SettingsDialogProvider></InteractionLayersProvider>
