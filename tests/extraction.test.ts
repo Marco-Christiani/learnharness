@@ -1709,6 +1709,16 @@ describe("the notes front door (importNotes — format-agnostic)", () => {
 		assert.equal(ledgers.readSources()[0]!.extractions?.length, 2);
 	});
 
+	it("empty Logseq bullets record completion without invoking either model", async () => {
+		const ledgers = memoryLedgers();
+		const forbidden = { ...silentModel(), streamFn: () => { throw new Error("Empty note invoked a model"); } };
+		const pipeline = createExtractionPipeline({ chatStore, graphStore: ledgers, extractor: forbidden, auditor: forbidden });
+		assert.deepEqual(await pipeline.importNotes({ filePath: "zet/pages/empty.md", text: "-\n-" }), { nodes: 0, chains: 0 });
+		assert.equal(ledgers.readSources()[0]!.importFingerprint, createHash("sha256").update("-\n-").digest("hex"));
+		assert.equal(ledgers.readSources()[0]!.extractions?.length, 0);
+		assert.deepEqual(await pipeline.importNotes({ filePath: "zet/pages/empty.md", text: "-\n-" }), { nodes: 0, chains: 0 });
+	});
+
 	it("a migrated path skips completed text under the retained source ID", async () => {
 		const ledgers = memoryLedgers();
 		const oldPath = "pages/migrated.md", filePath = "zet/pages/migrated.md";

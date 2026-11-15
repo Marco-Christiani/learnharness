@@ -19,3 +19,14 @@ export function notesSyncStatus(source: NotesSource | undefined, text: string): 
 	if (!source.importFingerprint) return "unverified";
 	return source.importFingerprint === notesFingerprint(text) ? "unchanged" : "changed";
 }
+
+/** Empty Markdown bullets and Org headings carry no claims to extract. */
+export function notesHaveContent(filePath: string, text: string): boolean {
+	if (!/\.(?:md|markdown|org)$/i.test(filePath)) return text.trim().length > 0;
+	return text.split("\n").some((line) => {
+		const content = line.trim();
+		if (!content || content === "-" || content === "+" || content === "*") return false;
+		if (/\.org$/i.test(filePath) && /^\*+$/.test(content)) return false;
+		return true;
+	});
+}

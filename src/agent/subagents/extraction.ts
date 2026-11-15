@@ -1,5 +1,5 @@
 import { notesImportLimitReached } from "../../core/notes-import-failure.ts";
-import { notesFingerprint, notesSourceId } from "../../core/notes-sync.ts";
+import { notesFingerprint, notesSourceId, notesHaveContent } from "../../core/notes-sync.ts";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type, type Static, type TSchema } from "typebox";
@@ -1310,7 +1310,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			// whole large file. Abort mid-run keeps earlier chunks merged
 			// (same doctrine as chat batches).
 			const chunkTokens = deps.getChunkTokens?.() ?? FACTORY_SETTINGS.graph.extractionChunkTokens;
-			const chunks = chunkNotes(input.text, chunkTokens);
+			const chunks = notesHaveContent(input.filePath, input.text) ? chunkNotes(input.text, chunkTokens) : [];
 			console.info(
 				`[extraction ${id}] notes pipeline start (${input.filePath}) — ${chunks.length} chunk(s) of ≤${chunkTokens} tok`,
 			);
