@@ -259,3 +259,17 @@ it("destination folders preserve explicit hidden-file and hidden-root selections
 	await tick();
 	assert.deepEqual(sent, ["Course/.notes.md", "Course/.Vault/notes.md"]);
 });
+
+it("a provider limit pauses pending imports without retrying billed files", async () => {
+	const sent: string[] = [];
+	const queue = createNotesImportQueue(async ([f]) => {
+		sent.push(f!.name);
+		return [{ requestIndex: 0, filePath: f!.name, ok: false, outcome: "failed", code: "rate_limited", error: "Usage limit reached. Resets at 5pm." }];
+	});
+	queue.append([file("a.md"), file("b.md"), file("c.md"), file("pending.md")]);
+	await tick();
+	assert.deepEqual(sent, ["a.md", "b.md", "c.md"]);
+	assert.equal(queue.getSnapshot().paused, true);
+	assert.equal(queue.getSnapshot().rows[3]!.status, "pending");
+	assert.match(queue.getSnapshot().errors[0]!, /Resets at 5pm/);
+});

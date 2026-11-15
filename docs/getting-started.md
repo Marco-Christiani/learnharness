@@ -50,7 +50,7 @@ Choose **Check changes** to preview each selected file. The preview converts PDF
 - Supported extensions are `.txt`, `.md`, `.markdown`, `.rst`, `.org`, `.adoc`, `.tex`, and `.pdf`, ignoring letter case. Each file has a 25 MiB limit. Folder imports exclude hidden entries below the selected root.
 - PDFs are recognized by their `%PDF-` header and converted locally, without OCR. Image-only pages are skipped and counted. Check the import's notices for scanner errors.
 - Other files are read as UTF-8. A zero byte in the first 8 KiB causes rejection before source registration or model calls. Save text as UTF-8.
-- Up to three files extract concurrently. **Sync progress** shows full paths and per-file status. **Pause queue** holds pending files while active extractions continue. Pending files can be canceled individually. **Stop** requests cancellation of an active extraction.
+- Up to three files extract concurrently. **Sync progress** shows full paths and per-file status. **Pause queue** holds pending files while active extractions continue. Pending files can be canceled individually. **Stop** requests cancellation of an active extraction. Provider-limit failures pause pending files and stop later chunks of the failed file. Review the error and resume after the provider allows requests.
 - Completed chunks and usage survive later failures. A failed or canceled import records no completion fingerprint, so selecting it again retries extraction. Changed files run through the merger, which retains existing claims.
 - Fingerprints survive server restarts. The pending file queue lives in the current page, so select the folder again after restarting. Completed, unchanged files skip extraction. Leaving the page while imports are queued prompts for confirmation.
 

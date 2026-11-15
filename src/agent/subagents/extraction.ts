@@ -1,5 +1,5 @@
-import { notesFingerprint } from "../../core/notes-sync.ts";
-import * as crypto from "node:crypto";
+import { notesImportLimitReached } from "../../core/notes-import-failure.ts";
+import { notesFingerprint, notesSourceId } from "../../core/notes-sync.ts";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type, type Static, type TSchema } from "typebox";
@@ -747,8 +747,7 @@ export interface ExtractionPipelineDeps extends GraphDeps, ExtractionModels {
 
 export interface NotesImportInput {
 	signal?: AbortSignal;
-	/** The source's file path — its identity (deterministic src id) AND its
-	 *  provenance label in the detail card. */
+	/** The picker-relative path resolves the source and labels its provenance. */
 	filePath: string;
 	/** The file's raw content, VERBATIM — any format. */
 	text: string;
@@ -772,10 +771,7 @@ export interface ExtractionPipeline {
 	/** Extract + audit + merge ONE chat. Single-flight per chat; resolves to
 	 *  the merger's append stats (or throws — no checkpoint on failure). */
 	runExtraction(chatId: string): Promise<EmissionStats>;
-	/** The format-agnostic front door (2026-09-13): run the same pipeline
-	 *  over ONE raw notes file. The source id is deterministic per file
-	 *  path, so re-importing the same file re-runs extraction against the
-	 *  same source identity (mappings dedupe by it). */
+	/** Import changed text under the existing source identity. */
 	importNotes(input: NotesImportInput): Promise<EmissionStats>;
 }
 
@@ -1381,7 +1377,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 					settled.push({ status: "rejected", reason: failure });
 					// Same source-wide-abort law as the chat door: stop the
 					// run; isolated failures keep going.
-					if (failure instanceof Error && failure.name === "AbortError") break;
+					if (failure instanceof Error && (failure.name === "AbortError" || notesImportLimitReached(failure.message))) break;
 				}
 			}
 			const stats = aggregateJobs(id, settled);
@@ -1411,7 +1407,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 
 	/** Completed imports skip identical text under the same source path. */
 	async function importNotes(input: NotesImportInput): Promise<EmissionStats> {
-		const id = `src_${crypto.createHash("sha256").update(input.filePath).digest("hex").slice(0, 12)}`;
+		const id = notesSourceId(input.filePath, graphStore.readSources());
 		if (input.signal?.aborted) throw new NotesImportError("aborted", { nodes: 0, chains: 0 }, "Import stopped.");
 		// Acquire BEFORE source upsert: overlapping contents must not alter metadata.
 		if (inFlight.has(id)) throw new NotesImportError("busy", { nodes: 0, chains: 0 }, "This file is already being imported. Try again when it finishes.");

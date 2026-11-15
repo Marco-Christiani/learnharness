@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
+import { notesSourceId } from "../core/notes-sync.ts";
+import { randomUUID } from "node:crypto";
 import { stores } from "./stores.ts";
 import type { ChatStore, GraphStore, SourceOrganizationStore } from "../core/ports.ts";
 import { getGraph } from "../core/graph.ts";
@@ -51,14 +52,14 @@ export function createSourceDirectory(deps: { chatStore: ChatStore; graphStore: 
 		}
 		return { ...read(), ...(createdFolderId ? { createdFolderId } : {}) };
 	}
-	/** Before starting the file's existing extraction pipeline. The source key
-	 * is the pipeline's unchanged path hash; no source text is stored here. */
+	/** Place the source under its retained ID before extraction starts. */
 	function registerImport(filePath: string): void {
-		const id = `src_${createHash("sha256").update(filePath).digest("hex").slice(0, 12)}`;
+		const sources = deps.graphStore.readSources();
+		const id = notesSourceId(filePath, sources);
 		const state = deps.sourceOrganizationStore.read();
 		// Legacy imports with no organization record already live at root.
 		// Explicitly preserve that placement on re-import too.
-		if (!placementOf(state, id) && deps.graphStore.readSources().some((s) => s.id === id)) {
+		if (!placementOf(state, id) && sources.some((s) => s.id === id)) {
 			state.placements = { ...state.placements, [id]: { folderId: null } };
 			deps.sourceOrganizationStore.write(state);
 			return;

@@ -244,10 +244,11 @@ function getLastEvent(events: AssistantMessageEvent[]): AssistantMessageEvent {
 	return event;
 }
 
-function getErrorMessage(events: AssistantMessageEvent[]): string | undefined {
+function getErrorMessage(events: AssistantMessageEvent[]): string {
 	const event = getLastEvent(events);
 	assert.equal(event.type, "error");
-	return event.type === "error" ? event.error.errorMessage : undefined;
+	assert.ok(event.error.errorMessage);
+	return event.error.errorMessage;
 }
 
 async function waitForExit(child: ChildProcessWithoutNullStreams): Promise<void> {
@@ -688,8 +689,7 @@ test("refusal stop reason → error", async (t) => {
 	assert.equal(getErrorMessage(events), "The model refused to complete the request");
 });
 
-test("non-zero exit mid-stream → error naming the exit code, stderr logged not shown, process and temp dirs gone", async (t) => {
-	const consoleError = t.mock.method(console, "error", () => {});
+test("non-zero exit mid-stream includes bounded diagnostics and cleans up", async (t) => {
 	const midStream = readFixtureLines("text.jsonl").slice(0, 5);
 	const { events, calls } = await runScenario(t, [...midStream, exitWith(1, "Error: ENOENT /home/someone/.claude/x\n    at main\n")]);
 
@@ -698,10 +698,7 @@ test("non-zero exit mid-stream → error naming the exit code, stderr logged not
 		["start", "text_start", "text_delta", "error"],
 	);
 
-	assert.equal(getErrorMessage(events), "claude CLI exited with code 1");
-	assert.ok(
-		consoleError.mock.calls.some((call) => call.arguments.some((argument) => String(argument).includes("ENOENT /home/someone/.claude/x"))),
-	);
+	assert.match(getErrorMessage(events), /claude CLI exited with code 1: Error: ENOENT/);
 
 	const error = getLastEvent(events);
 	assert.ok(error.type === "error");
@@ -709,6 +706,22 @@ test("non-zero exit mid-stream → error naming the exit code, stderr logged not
 	assert.deepEqual(error.error.content, [{ type: "text", text: "hello there" }]);
 
 	await assertCleanedUp(getOnlyCall(calls));
+});
+
+test("exit diagnostics preserve rate limits and redact credentials", async (t) => {
+	const { events } = await runScenario(t, [exitWith(1, 'Rate limit reached. Retry after 60 seconds. Authorization: Bearer secret-value api_key=key-value')]);
+	const message = getErrorMessage(events);
+	assert.match(message, /Rate limit reached.*Retry after 60 seconds/);
+	assert.doesNotMatch(message, /secret-value|key-value/);
+});
+
+test("structured errors redact credentials and bound output", async (t) => {
+	const error = JSON.stringify({ type: "result", is_error: true, result: `Rate limit: token=secret-value ${"x".repeat(2000)}` });
+	const { events } = await runScenario(t, [error, HOLD]);
+	const message = getErrorMessage(events);
+	assert.match(message, /Rate limit/);
+	assert.doesNotMatch(message, /secret-value/);
+	assert.ok(message.length <= 1024);
 });
 
 test("exit without stderr names the exit code", async (t) => {

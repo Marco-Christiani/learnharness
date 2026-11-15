@@ -1,3 +1,4 @@
+import { notesImportLimitReached } from "@/src/core";
 import { IMPORT_EXTENSIONS, MAX_IMPORT_BYTES, validNotesPath } from "@/lib/notes-import-limits";
 import type { NotesImportResult } from "./notes-import";
 
@@ -64,6 +65,7 @@ export function createNotesImportQueue(post: (files: readonly File[], requestId?
 					if (!r) throw new Error("Invalid import response. Check the graph before retrying.");
 					rows.get(index)!.status = r.ok ? "completed" : r.outcome === "aborted" ? "canceled" : "failed";
 					if (!r.ok) {
+						if (r.code === "rate_limited" || notesImportLimitReached(r.error ?? "")) paused = true;
 						const details = [r.provider, r.missing?.join(", "), r.slots?.join(", ")].filter(Boolean);
 						failures.set(index, `${r.filePath}: ${r.error}${r.code ? `\n${[r.code, ...details].join(" — ")}` : ""}`);
 					} else if (r.notice) notices.set(index, `${r.filePath}: ${r.notice}`);

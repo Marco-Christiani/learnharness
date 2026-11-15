@@ -139,6 +139,17 @@ function createOutput(model: Model<Api>): AssistantMessage {
 	};
 }
 
+// CLI diagnostics may include credentials in headers, configuration, or URLs.
+function safeDiagnostic(text: string): string {
+	return text
+		.replace(/(authorization["']?\s*[:=]\s*["']?)(?:bearer\s+)?[^\s,;"}]+/gi, "$1[redacted]")
+		.replace(/((?:api[-_]?key|access[-_]?token|refresh[-_]?token|client[-_]?secret|password|token)\s*["']?\s*[:=]\s*["']?)[^\s,;"'}&]+/gi, "$1[redacted]")
+		.replace(/\b(?:sk|sk-ant|ghp|github_pat)-[A-Za-z0-9_-]+\b/gi, "[redacted]")
+		.replace(/\bBearer\s+[^\s,;"}]+/gi, "Bearer [redacted]")
+		.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
+		.trim().slice(0, 1024);
+}
+
 function getAssistantErrorMessage(error: string, text: string): string {
 	return error === NOT_SIGNED_IN_ERROR ? ClaudeCodeError.NotSignedIn : text || error;
 }
@@ -229,11 +240,11 @@ class ClaudeTurn {
 				return;
 
 			case "assistantError":
-				this.fail(getAssistantErrorMessage(event.error, event.text), "error");
+				this.fail(safeDiagnostic(getAssistantErrorMessage(event.error, event.text)), "error");
 				return;
 
 			case "resultError":
-				this.fail(event.text, "error");
+				this.fail(safeDiagnostic(event.text), "error");
 				return;
 		}
 	}
@@ -601,8 +612,8 @@ class ClaudeProcess implements LiveProcess {
 		removeLiveProcess(this);
 		if (this.pendingError) addLiveProcess(this);
 		this.signal?.removeEventListener("abort", this.abort);
-		if (this.stderr.trim()) console.error("claude CLI stderr:", this.stderr.trim());
-		this.turn.fail(message, "error");
+		const diagnostic = safeDiagnostic(this.stderr);
+		this.turn.fail(diagnostic ? `${message}: ${diagnostic}` : message, "error");
 		removeTurnResources(this.bridge, this.files).catch((error: unknown) => {
 			console.error("claude CLI cleanup failed:", error);
 		});

@@ -357,3 +357,11 @@ it("Stop targets its request when two uploads have the same source path", async 
 	const results = await Promise.all(requests.map(async (response) => (await (await response).json()).results[0]));
 	assert.deepEqual(results.map((row) => row.outcome), ["completed", "aborted"]);
 });
+
+it("provider limits retain the CLI diagnostic and expose a queue pause code", async () => {
+	extraction.importNotes = async () => { throw new NotesImportError("failed", { nodes: 0, chains: 0 }, "claude CLI exited with code 1: Rate limit reached. Resets at 5pm."); };
+	const response = await POST(request(["limited.md"]));
+	const { results } = await response.json();
+	assert.equal(results[0].code, "rate_limited");
+	assert.match(results[0].error, /Resets at 5pm/);
+});

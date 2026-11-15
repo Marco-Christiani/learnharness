@@ -91,7 +91,8 @@ export function NotesImportProgress() {
 		<button className="p-2 text-xs" onClick={() => setOpen(!open)}>Sync progress ({snapshot.rows.filter((row) => row.status === "completed").length}/{snapshot.rows.length})</button>
 		<HostDialog open={open} onClose={() => { setOpen(false); return "closed"; }} aria-label="Sync progress" backdropProps={{ className: "fixed inset-0 flex items-center justify-center bg-background/80" }} frame={<div className="max-h-[75vh] w-[min(90vw,48rem)] overflow-auto rounded border bg-card p-4 shadow-xl" />}>
 			<div className="flex justify-between text-sm"><button onClick={() => snapshot.paused ? pageImportQueue.resume() : pageImportQueue.pause()}>{snapshot.paused ? "Resume queue" : "Pause queue"}</button><button onClick={() => setOpen(false)}>Close progress</button></div>
-			<p className="py-2 text-xs text-muted-foreground">Pause holds pending files. Stop cancels an active extraction. Earlier merges remain saved.</p>
+			<p className="py-2 text-xs text-muted-foreground">Pause holds pending files. Stop cancels an active extraction. Earlier merges remain saved. Provider limit errors pause pending imports automatically.</p>
+			<NotesImportErrors errors={snapshot.errors} />
 			{snapshot.rows.map((row) => <div key={row.index} className="flex items-start gap-2 border-t py-2 text-xs"><span className="min-w-0 flex-1 whitespace-pre-wrap break-all">{row.path}</span><span>{row.status}</span>{(row.status === "pending" || row.status === "extracting") && <button onClick={() => void pageImportQueue.cancel(row.index)}>{row.status === "pending" ? "Cancel" : "Stop"}</button>}</div>)}
 		</HostDialog>
 	</div>;

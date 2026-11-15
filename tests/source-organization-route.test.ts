@@ -105,3 +105,14 @@ it("newer/corrupt data refuses reads and writes without overwriting its bytes", 
 		}
 	} finally { fs.writeFileSync(SOURCE_ORGANIZATION_FILE, before); }
 });
+
+it("a migrated picker path reuses its source ID and placement", () => {
+	const oldPath = "pages/migrated.md", filePath = "zet/pages/migrated.md", id = sourceId(oldPath);
+	stores.graphStore.upsertSource({ id, filePath, importedAt: "2026-11-15T00:00:00Z" });
+	const before = stores.sourceOrganizationStore.read();
+	before.placements[id] = { folderId: null };
+	stores.sourceOrganizationStore.write(before);
+	sourceDirectory.registerImport(filePath);
+	assert.deepEqual(stores.sourceOrganizationStore.read(), before);
+	assert.equal(stores.graphStore.readSources().filter((source) => source.filePath === filePath).length, 1);
+});

@@ -6,6 +6,7 @@ import { IMPORT_EXTENSIONS, MAX_IMPORT_BODY_BYTES, MAX_IMPORT_BYTES, UNSUPPORTED
 import { FormBodyLimitError, readBoundedFormData } from "@/lib/bounded-form-data.ts";
 import {
 	emit,
+	notesImportLimitReached,
 	ModelsNotConfiguredError,
 	PROVIDER_KEY_MISSING_CODE,
 	ProviderKeyMissingError,
@@ -23,7 +24,7 @@ interface ImportResult {
 	syncStatus?: NotesSyncStatus;
 	error?: string;
 	/** Configuration failures expose the settings fields that need attention. */
-	code?: "models_not_configured" | (typeof PROVIDER_KEY_MISSING_CODE);
+	code?: "rate_limited" | "models_not_configured" | (typeof PROVIDER_KEY_MISSING_CODE);
 	missing?: string[];
 	/** The key-refusal specifics (provider_key_missing only). */
 	provider?: string;
@@ -110,7 +111,9 @@ export async function POST(request: Request) {
 					results.push({ filePath, requestIndex, outcome: "failed", ok: false, error: notes.error });
 					continue;
 				}
-				const source = stores.graphStore.readSources().find((entry) => entry.id === notesSourceId(filePath));
+				const sources = stores.graphStore.readSources();
+				const sourceId = notesSourceId(filePath, sources);
+				const source = sources.find((entry) => entry.id === sourceId);
 				const syncStatus = notesSyncStatus(source, notes.text);
 				if (preview) {
 					results.push({ filePath, requestIndex, outcome: "completed", ok: true, stats: { nodes: 0, chains: 0 }, syncStatus, ...(notes.notice ? { notice: notes.notice } : {}) });
@@ -130,6 +133,7 @@ export async function POST(request: Request) {
 					results.push({ filePath, requestIndex, ok: false,
 						outcome: err instanceof NotesImportError ? err.outcome : "failed",
 						...(err instanceof NotesImportError ? { stats: err.partialStats } : {}),
+						...(notesImportLimitReached(err instanceof Error ? err.message : String(err)) ? { code: "rate_limited" as const } : {}),
 						error: err instanceof Error ? err.message : String(err) });
 				}
 			} finally { if (!preview) emit("sources-changed", {}); }

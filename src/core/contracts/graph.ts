@@ -75,8 +75,8 @@ export interface ProvenancePoint {
 
 /** Imported notes source processed by the extractor → auditor → merger pipeline.
  * Provenance identifies the file rather than a chat message, and the source
- * owns its extraction usage log. IDs are src_ plus a deterministic file-path
- * hash, so re-importing the same path uses the same source identity. */
+ * owns its extraction usage log. New IDs use a file-path hash and remain
+ * stable when an existing source moves to a different import path. */
 export interface NotesSource {
 	id: string;
 	filePath: string;

@@ -1709,6 +1709,17 @@ describe("the notes front door (importNotes — format-agnostic)", () => {
 		assert.equal(ledgers.readSources()[0]!.extractions?.length, 2);
 	});
 
+	it("a migrated path skips completed text under the retained source ID", async () => {
+		const ledgers = memoryLedgers();
+		const oldPath = "pages/migrated.md", filePath = "zet/pages/migrated.md";
+		const id = `src_${createHash("sha256").update(oldPath).digest("hex").slice(0, 12)}`;
+		ledgers.upsertSource({ id, filePath, importedAt: "2026-11-15T00:00:00Z", importFingerprint: createHash("sha256").update(NOTES_TEXT).digest("hex") });
+		const pipeline = createExtractionPipeline({ chatStore, graphStore: ledgers });
+		assert.deepEqual(await pipeline.importNotes({ filePath, text: NOTES_TEXT }), { nodes: 0, chains: 0 });
+		assert.equal(ledgers.readSources().length, 1);
+		assert.equal(ledgers.readSources()[0]!.id, id);
+	});
+
 	it("legacy fingerprints do not establish a completed import", async () => {
 		const ledgers = memoryLedgers();
 		const filePath = "/vault/legacy.md";
@@ -2516,6 +2527,20 @@ describe("notes import completion and retry reliability", () => {
 		assert.equal(ledgers.readSources()[0]!.importFingerprint, undefined);
 		assert.deepEqual(await make(ledgers).importNotes(input), { nodes: 1, chains: 0 });
 		assert.equal(ledgers.readSources()[0]!.extractions?.length, 3);
+	});
+
+	it("a provider limit stops later chunks without recording completion", async () => {
+		const ledgers = memoryLedgers();
+		let calls = 0;
+		const pipeline = createExtractionPipeline({ chatStore, graphStore: ledgers, getChunkTokens: () => 1,
+			engineFor: () => { calls++; throw new Error("Rate limit reached. Resets at 5pm."); } });
+		await assert.rejects(pipeline.importNotes({ ...input, text: "first chunk\nsecond chunk\nthird chunk" }), (error) => {
+			assert.ok(error instanceof NotesImportError);
+			assert.match(error.message, /Resets at 5pm/);
+			return true;
+		});
+		assert.equal(calls, 1);
+		assert.equal(ledgers.readSources()[0]!.importFingerprint, undefined);
 	});
 
 	it("failure followed by an unchanged retry really extracts and preserves both usage records", async () => {
