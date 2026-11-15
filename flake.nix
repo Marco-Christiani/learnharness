@@ -20,7 +20,7 @@
         mkdir -p "$LH_DATA_DIR" "$(dirname "$LH_AUTH_FILE")"
         if [[ ! -d node_modules ]]; then npm ci; fi
         npm run plugins:setup
-        exec npm run dev -- "$@"
+        exec npm run dev -- -H 127.0.0.1 "$@"
       '';
     };
   in {
