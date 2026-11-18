@@ -81,6 +81,26 @@ export function isDictationLanguage(value: unknown): value is DictationLanguage 
 	return DICTATION_LANGUAGES.some(({ code }) => code === value);
 }
 
+/** The speech-to-text service dictation runs on. No engine falls back to another. */
+export const DICTATION_ENGINES = ["deepgram", "openai-api", "openai-chatgpt"] as const;
+export type DictationEngine = (typeof DICTATION_ENGINES)[number];
+
+export const DICTATION_ENGINE_LABELS: Record<DictationEngine, string> = {
+	deepgram: "Deepgram",
+	"openai-api": "OpenAI (API key)",
+	"openai-chatgpt": "OpenAI (ChatGPT sign-in)",
+};
+
+export function isDictationEngine(value: unknown): value is DictationEngine {
+	return (DICTATION_ENGINES as readonly unknown[]).includes(value);
+}
+
+/** The ISO-639-1 code OpenAI transcription takes, or undefined to auto-detect. */
+export function openAiTranscriptionLanguage(language: DictationLanguage): string | undefined {
+	if (language === "multi") return undefined;
+	return language.split("-")[0]!.toLowerCase();
+}
+
 /** Only language varies. Keep the owner's tuned streaming parameters. */
 export function deepgramListenUrl(language: DictationLanguage): string {
 	return "wss://api.deepgram.com/v1/listen" +

@@ -29,6 +29,7 @@ import {
 	CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW,
 	CUSTOM_MODEL_DEFAULT_MAX_TOKENS,
 	CUSTOM_PROVIDER,
+	FACTORY_SETTINGS,
 	normalizeBaseUrl,
 	type AuthKeyStatus,
 	type CustomModel,
@@ -42,7 +43,8 @@ import { useInteractionLayer, useInteractionLayers, useOptionalInteractionLayers
 import { isInteractionScopeEligible } from "@/components/plugin-input-focus";
 import { MenuShell } from "@/components/menu-shell";
 import { notifySettingsSaved } from "@/components/settings-signal";
-import { DictationLanguageSetting } from "@/components/dictation-language";
+import { DictationEngineSetting, DictationLanguageSetting } from "@/components/dictation-language";
+import { useDictationLanguage } from "@/components/dictation-preference";
 
 /** One pi-ai provider with plain API-key auth (the Platform seam —
  *  derived from pi-ai's own env-key table; no drift possible). */
@@ -371,6 +373,8 @@ export function KeysSection({
 	initialRow?: string;
 }) {
 	const [statuses, setStatuses] = useState<AuthKeyStatus[] | null>(null);
+	// until settings load, show the factory engine's rows
+	const dictationEngine = useDictationLanguage().engine ?? FACTORY_SETTINGS.dictation.engine;
 	const [providers, setProviders] = useState<ProviderKeyInfo[] | undefined>(undefined);
 	const [loading, setLoading] = useState(true);
 	/** The unfolded row (its id), null = all folded. Seeded by the
@@ -581,7 +585,8 @@ export function KeysSection({
 			</SettingsGroup>
 
 			{(["Dictation", "Search"] as const).map((label) => <SettingsGroup key={label} label={label} testid={label === "Dictation" ? "group-dictation" : "group-search"}>
-				{toolRows.filter((status) => label === "Dictation" ? status.id === "DEEPGRAM_API_KEY" : status.id !== "DEEPGRAM_API_KEY").map((status) => (
+				{label === "Dictation" && <DictationEngineSetting />}
+				{toolRows.filter((status) => label === "Dictation" ? status.id === "DEEPGRAM_API_KEY" && dictationEngine === "deepgram" : status.id !== "DEEPGRAM_API_KEY").map((status) => (
 					<KeyTableRow
 						key={status.id}
 						label={status.info?.label ?? status.id}
@@ -601,14 +606,22 @@ export function KeysSection({
 				))}
 				{label === "Dictation" && <>
 					<DictationLanguageSetting />
-					<p data-testid="dictation-setup-hint" className="px-1 text-[11px] leading-relaxed text-muted-foreground/70">
+					{dictationEngine === "deepgram" && <p data-testid="dictation-setup-hint" className="px-1 text-[11px] leading-relaxed text-muted-foreground/70">
 						Create a <a
 							href="https://console.deepgram.com/"
 							target="_blank"
 							rel="noreferrer"
 							className="underline underline-offset-2 hover:text-foreground"
 						>Deepgram API key</a> with the Member role or higher, then add it above.
-					</p>
+					</p>}
+					{dictationEngine === "openai-api" && <p data-testid="dictation-setup-hint" className="px-1 text-[11px] leading-relaxed text-muted-foreground/70">
+						{statuses?.some((status) => status.id === "OPENAI_API_KEY" && status.present)
+							? "Uses the OpenAI key under Model API keys (gpt-transcribe)."
+							: "Add an OpenAI key under Model API keys to use this engine."}
+					</p>}
+					{dictationEngine === "openai-chatgpt" && <p data-testid="dictation-setup-hint" className="px-1 text-[11px] leading-relaxed text-muted-foreground/70">
+						Uses the ChatGPT account connected under Subscriptions, through the same transcription endpoint Codex uses, which OpenAI does not document. The language is detected automatically.
+					</p>}
 				</>}
 			</SettingsGroup>)}
 

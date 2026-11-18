@@ -42,6 +42,7 @@ export { effectivePromptSegments, allSegmentPaths, readPromptOverride } from "..
 // keeps its plain process.env reads (that seam is the point).
 export * from "./keys.ts";
 export { synthesizeSpeech, isTtsMode, TtsError, TTS_MAX_CHARS, type TtsMode } from "./tts.ts";
+export { transcribeDictation, SttError, STT_MAX_BYTES } from "./stt.ts";
 export * from "./search.ts";
 export { authStore } from "../store/auth.ts";
 export * from "./settings-body.ts";

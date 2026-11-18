@@ -2,12 +2,12 @@
 
 import { useSyncExternalStore } from "react";
 import {
-	FACTORY_SETTINGS, isDictationLanguage, sanitizeUserSettings,
-	type DictationLanguage, type UserSettings,
+	FACTORY_SETTINGS, isDictationEngine, isDictationLanguage, sanitizeUserSettings,
+	type DictationEngine, type DictationLanguage, type DictationSettings, type UserSettings,
 } from "@/src/core";
 import { notifySettingsSaved, onSettingsSaved } from "@/components/settings-signal";
 
-const INITIAL = { language: undefined as DictationLanguage | undefined, saving: false, error: null as string | null };
+const INITIAL = { language: undefined as DictationLanguage | undefined, engine: undefined as DictationEngine | undefined, saving: false, error: null as string | null };
 
 /** One confirmed preference and one write in flight, shared by every surface.
  * The factory keeps transport tests isolated without a second persistence path.
@@ -40,8 +40,9 @@ export function createDictationLanguageStore(request: typeof fetch, saved: () =>
 				if (body.settings !== null && record === null) throw new Error();
 				if (version !== revision) return getLanguage();
 				const language = record?.dictation?.language ?? FACTORY_SETTINGS.dictation.language;
+				const engine = record?.dictation?.engine ?? FACTORY_SETTINGS.dictation.engine;
 				needsRead = false;
-				publish({ language, error: null });
+				publish({ language, engine, error: null });
 				return language;
 			} catch {
 				if (version !== revision) return getLanguage();
@@ -56,6 +57,15 @@ export function createDictationLanguageStore(request: typeof fetch, saved: () =>
 	}
 
 	function save(language: DictationLanguage): Promise<boolean> {
+		return write({ language }, "language");
+	}
+
+	function saveEngine(engine: DictationEngine): Promise<boolean> {
+		return write({ engine }, "engine");
+	}
+
+	// the settings route replaces the whole section, so every write carries both fields
+	function write(patch: DictationSettings, field: "language" | "engine"): Promise<boolean> {
 		// A different selection must never inherit the previous write's success.
 		if (writing || snapshot.language === undefined) return Promise.resolve(false);
 		revision++;
@@ -64,18 +74,19 @@ export function createDictationLanguageStore(request: typeof fetch, saved: () =>
 			try {
 				const res = await request("/api/settings/dictation", {
 					method: "PUT", headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ language }),
+					body: JSON.stringify({ language: snapshot.language, engine: snapshot.engine ?? FACTORY_SETTINGS.dictation.engine, ...patch }),
 				});
 				if (!res.ok) throw new Error();
 				const body = await res.json() as { settings: UserSettings };
 				const confirmed = body.settings?.dictation?.language;
-				if (!isDictationLanguage(confirmed)) throw new Error();
+				const engine = body.settings?.dictation?.engine ?? FACTORY_SETTINGS.dictation.engine;
+				if (!isDictationLanguage(confirmed) || !isDictationEngine(engine)) throw new Error();
 				needsRead = false;
-				publish({ language: confirmed, error: null });
+				publish({ language: confirmed, engine, error: null });
 				saved();
 				return true;
 			} catch {
-				publish({ error: "Could not save dictation language. Try again." });
+				publish({ error: `Could not save dictation ${field}. Try again.` });
 				return false;
 			} finally {
 				writing = null;
@@ -95,8 +106,13 @@ export function createDictationLanguageStore(request: typeof fetch, saved: () =>
 		}
 	}
 
+	async function getEngine(): Promise<DictationEngine> {
+		await getLanguage();
+		return snapshot.engine ?? FACTORY_SETTINGS.dictation.engine;
+	}
+
 	return {
-		load, save, getLanguage,
+		load, save, saveEngine, getLanguage, getEngine,
 		getSnapshot: () => snapshot,
 		getServerSnapshot: () => INITIAL,
 		subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
@@ -128,5 +144,5 @@ function subscribe(listener: () => void) {
 
 export function useDictationLanguage() {
 	const snapshot = useSyncExternalStore(subscribe, store.getSnapshot, store.getServerSnapshot);
-	return { ...snapshot, load: store.load, save: store.save, getLanguage: store.getLanguage };
+	return { ...snapshot, load: store.load, save: store.save, saveEngine: store.saveEngine, getLanguage: store.getLanguage, getEngine: store.getEngine };
 }

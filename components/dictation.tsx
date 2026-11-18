@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2Icon, MicIcon } from "lucide-react";
 import { useSettingsDialog } from "@/components/settings/settings-dialog";
 import { Hint } from "@/components/ui/hint";
-import { deepgramListenUrl, type DictationLanguage } from "@/src/core";
+import { deepgramListenUrl, type DictationEngine, type DictationLanguage } from "@/src/core";
 import { useDictationLanguage } from "@/components/dictation-preference";
 import { setDictationActive } from "@/components/dictation-state";
 import { dispatchFocusedPluginShortcut } from "@/components/plugin-input-focus";
@@ -111,6 +111,48 @@ export const DEEPGRAM_KEY_ID = "DEEPGRAM_API_KEY";
  * it and deep-links Settings → Keys → the Deepgram row. */
 export const DICTATION_KEYLESS = "Dictation needs a Deepgram key";
 export const DICTATION_ACTIVE_ELSEWHERE = "Dictation is active elsewhere";
+/** The OpenAI engines' setup lines; the errored button deep-links to the missing setting. */
+export const DICTATION_OPENAI_KEYLESS = "Dictation needs an OpenAI key";
+export const DICTATION_CHATGPT_SIGNIN = "Dictation needs ChatGPT sign-in";
+export const OPENAI_KEY_ID = "OPENAI_API_KEY";
+
+/** The 16 kHz capture rate shared by every engine (public/worklets/pcm-capture.js). */
+const CAPTURE_RATE = 16_000;
+/** Recorded runs stop on their own past this size, under OpenAI's 25 MB upload limit. */
+export const RECORDING_MAX_BYTES = 24 * 1024 * 1024;
+
+/** A mono 16-bit PCM WAV around captured frames. */
+export function pcm16Wav(frames: readonly ArrayBuffer[], sampleRate = CAPTURE_RATE): Blob {
+	const bytes = frames.reduce((n, f) => n + f.byteLength, 0);
+	const header = new DataView(new ArrayBuffer(44));
+	const text = (offset: number, value: string) => { for (let i = 0; i < value.length; i++) header.setUint8(offset + i, value.charCodeAt(i)); };
+	text(0, "RIFF");
+	header.setUint32(4, 36 + bytes, true);
+	text(8, "WAVE");
+	text(12, "fmt ");
+	header.setUint32(16, 16, true);
+	header.setUint16(20, 1, true);
+	header.setUint16(22, 1, true);
+	header.setUint32(24, sampleRate, true);
+	header.setUint32(28, sampleRate * 2, true);
+	header.setUint16(32, 2, true);
+	header.setUint16(34, 16, true);
+	text(36, "data");
+	header.setUint32(40, bytes, true);
+	return new Blob([header.buffer, ...frames], { type: "audio/wav" });
+}
+
+/** Transcribes one recorded run through the OpenAI engines' route. */
+async function transcribeRecording(frames: readonly ArrayBuffer[]): Promise<string> {
+	const res = await fetch("/api/stt/transcribe", { method: "POST", headers: { "Content-Type": "audio/wav" }, body: pcm16Wav(frames) });
+	const data = (await res.json().catch(() => ({}))) as { text?: string; message?: string; setup?: string };
+	if (!res.ok || typeof data.text !== "string") {
+		if (data.setup === "openai-key") throw new Error(DICTATION_OPENAI_KEYLESS);
+		if (data.setup === "chatgpt-signin") throw new Error(DICTATION_CHATGPT_SIGNIN);
+		throw new Error(data.message ?? `transcription route ${res.status}`);
+	}
+	return data.text;
+}
 
 // Mounted controllers do not claim capture. Only start() acquires the single
 // window-wide owner, synchronously, before settings/mic/token awaits.
@@ -345,7 +387,7 @@ export function useDictation({ append, destination = "primary", disabled = false
 }): Dictation {
 	const primary = destination === "primary";
 	const owner = useRef(Symbol("dictation")).current;
-	const { getLanguage } = useDictationLanguage();
+	const { getLanguage, getEngine } = useDictationLanguage();
 	const [phase, setPhaseState] = useState<DictationPhase>("idle");
 	const phaseRef = useRef<DictationPhase>("idle");
 	const setPhase = useCallback((next: DictationPhase) => {
@@ -394,6 +436,10 @@ export function useDictation({ append, destination = "primary", disabled = false
 	const waitersRef = useRef<Array<{ resolve: () => void; reject: (error: unknown) => void }>>([]);
 	const appendFailureRef = useRef<{ error: unknown } | null>(null);
 	const appendPendingRef = useRef(false);
+	/** The engine this run started on. OpenAI runs record into recordedRef and transcribe at stop. */
+	const engineRef = useRef<DictationEngine>("deepgram");
+	const recordedRef = useRef<{ frames: ArrayBuffer[]; bytes: number }>({ frames: [], bytes: 0 });
+	const stopRef = useRef<() => void>(() => {});
 
 	/** Flush into this run's fixed destination. Called exactly once at cleanup; the
 	 *  buffer clears itself so double-cleanup is a no-op. */
@@ -424,6 +470,7 @@ export function useDictation({ append, destination = "primary", disabled = false
 			safetyRef.current = null;
 		}
 		pendingRef.current = [];
+		recordedRef.current = { frames: [], bytes: 0 };
 		for (const track of streamRef.current?.getTracks() ?? []) track.stop();
 		streamRef.current = null;
 		sourceRef.current?.disconnect();
@@ -455,7 +502,7 @@ export function useDictation({ append, destination = "primary", disabled = false
 				if (failed) waiter.reject(failed.error);
 				else waiter.resolve();
 			}
-			if (warmNext) warmTokens.refresh();
+			if (warmNext && engineRef.current === "deepgram") warmTokens.refresh();
 		};
 		if (appended && typeof (appended as PromiseLike<unknown>).then === "function") {
 			appendPendingRef.current = true;
@@ -549,9 +596,11 @@ export function useDictation({ append, destination = "primary", disabled = false
 		bufferRef.current = []; // fresh run, fresh buffer (round 2)
 		pendingRef.current = []; // fresh run, fresh queue (mitigation A)
 		const gen = ++genRef.current;
+		recordedRef.current = { frames: [], bytes: 0 };
 		let language: DictationLanguage;
+		let engine: DictationEngine;
 		try {
-			language = await getLanguage();
+			[language, engine] = await Promise.all([getLanguage(), getEngine()]);
 		} catch (e) {
 			if (gen !== genRef.current) return;
 			setError(e instanceof Error ? e.message : "Dictation language unavailable");
@@ -559,6 +608,8 @@ export function useDictation({ append, destination = "primary", disabled = false
 			return;
 		}
 		if (gen !== genRef.current) return;
+		engineRef.current = engine;
+		const recording = engine !== "deepgram";
 
 		// Mitigation D: the warm token (pre-minted at mount / after the last
 		// run) resolves ~instantly; a cold/keyless mint surfaces below. The
@@ -566,7 +617,7 @@ export function useDictation({ append, destination = "primary", disabled = false
 		// the token runs concurrently with it. 127.0.0.1 is a secure
 		// context, so getUserMedia works without TLS; macOS TCC prompts on
 		// first use.
-		const tokenPromise = warmTokens.mint();
+		const tokenPromise = recording ? Promise.resolve("") : warmTokens.mint();
 		tokenPromise.catch(() => {}); // surfaced below; no unhandled rejection
 		const micPromise = navigator.mediaDevices.getUserMedia({
 			audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -594,6 +645,11 @@ export function useDictation({ append, destination = "primary", disabled = false
 				const msg = e.data as { type: string; rms?: number; buffer?: ArrayBuffer };
 				if (msg.type === "level") {
 					levelRef.current = msg.rms ?? 0; // never reset to zero (dictate pattern)
+				} else if (msg.type === "audio" && recording) {
+					const run = recordedRef.current;
+					run.frames.push(msg.buffer!);
+					run.bytes += msg.buffer!.byteLength;
+					if (run.bytes >= RECORDING_MAX_BYTES) stopRef.current();
 				} else if (msg.type === "audio") {
 					const ws = wsRef.current;
 					if (ws && ws.readyState === WebSocket.OPEN) ws.send(msg.buffer!);
@@ -624,6 +680,11 @@ export function useDictation({ append, destination = "primary", disabled = false
 			return;
 		}
 		if (gen !== genRef.current) return;
+		if (recording) {
+			// OpenAI engines record locally and transcribe once at stop
+			setPhase("recording");
+			return;
+		}
 		let token: string;
 		try {
 			token = await tokenPromise;
@@ -637,7 +698,7 @@ export function useDictation({ append, destination = "primary", disabled = false
 		// Mitigation B: the handshake fires the moment the graph is live,
 		// overlapping any remaining token wait — mic-gated, never before it.
 		openSocket(gen, token, language);
-	}, [openSocket, cleanup, getLanguage, owner, primary, setPhase]);
+	}, [openSocket, cleanup, getLanguage, getEngine, owner, primary, setPhase]);
 
 	const stop = useCallback(() => {
 		const gen = genRef.current;
@@ -652,6 +713,28 @@ export function useDictation({ append, destination = "primary", disabled = false
 		sourceRef.current = null;
 		workletRef.current?.disconnect();
 		workletRef.current = null;
+
+		if (engineRef.current !== "deepgram") {
+			const frames = recordedRef.current.frames;
+			if (frames.length === 0) {
+				cleanup();
+				return;
+			}
+			// the spinner stays up while the recording uploads and transcribes
+			transcribeRecording(frames).then(
+				(text) => {
+					if (gen !== genRef.current) return;
+					if (text) bufferRef.current.push(text);
+					cleanup();
+				},
+				(e: unknown) => {
+					if (gen !== genRef.current) return;
+					setError(e instanceof Error ? e.message : "Transcription failed");
+					cleanup();
+				},
+			);
+			return;
+		}
 
 		const ws = wsRef.current;
 		if (ws && ws.readyState === WebSocket.OPEN) {
@@ -670,6 +753,7 @@ export function useDictation({ append, destination = "primary", disabled = false
 			cleanup();
 		}
 	}, [cleanup, setPhase]);
+	stopRef.current = stop;
 
 	const cancel = useCallback(() => {
 		if (phaseRef.current === "idle") return;
@@ -763,7 +847,7 @@ export function DictationBar({ dictation, disabled = false }: { dictation: Dicta
 	 *  idle button deep-links Settings → Keys → the Deepgram row and clears
 	 *  the error — the surface is clean when the user returns. Any other
 	 *  error keeps the old behavior (click = retry, which clears). */
-	const keyless = error === DICTATION_KEYLESS;
+	const setupRow = error === DICTATION_KEYLESS ? DEEPGRAM_KEY_ID : error === DICTATION_OPENAI_KEYLESS ? OPENAI_KEY_ID : error === DICTATION_CHATGPT_SIGNIN ? "" : null;
 	const [levels, setLevels] = useState<number[]>(() => new Array(METER_CELLS).fill(0));
 	/** Adaptive cell count (owner round 2): derived from the meter's
 	 *  measured width — narrow rows show fewer bars instead of
@@ -816,9 +900,9 @@ export function DictationBar({ dictation, disabled = false }: { dictation: Dicta
 				<button
 					type="button"
 					onClick={() => {
-						if (keyless) {
+						if (setupRow !== null) {
 							clearError();
-							openSettings("keys", DEEPGRAM_KEY_ID);
+							openSettings("keys", setupRow || undefined);
 						} else {
 							toggle();
 						}

@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { DICTATION_LANGUAGES, type DictationLanguage } from "@/src/core";
+import { DICTATION_ENGINE_LABELS, DICTATION_ENGINES, DICTATION_LANGUAGES, isDictationEngine, type DictationLanguage } from "@/src/core";
 import { MenuShell } from "@/components/menu-shell";
 import { useInteractionLayers } from "@/components/interaction-layers";
 import { Hint } from "@/components/ui/hint";
-import { SettingsMenuTrigger, SettingsRow } from "@/components/settings/controls";
+import { SettingsMenuTrigger, SettingsRow, ThinSelect } from "@/components/settings/controls";
 import { SearchMenuList } from "@/components/settings/search-menu-list";
 import { useDictationActive } from "@/components/dictation-state";
 import { useDictationLanguage } from "@/components/dictation-preference";
@@ -17,6 +17,26 @@ export function DictationLanguageSetting() {
 	const active = useDictationActive();
 	return <SettingsRow label="Language" testid="row-dictation-language" dimmed={active}>
 		<DictationLanguagePicker preference={preference} disabled={active} />
+	</SettingsRow>;
+}
+
+/** The speech-to-text service dictation uses. Each engine is a separate choice with no fallback. */
+export function DictationEngineSetting() {
+	const { engine, saving, error, saveEngine } = useDictationLanguage();
+	const active = useDictationActive();
+	return <SettingsRow label="Engine" testid="row-dictation-engine" dimmed={active}>
+		<Hint label={error ?? "Speech-to-text service for dictation"} side="top">
+			<ThinSelect
+				value={engine ?? ""}
+				ariaLabel="Dictation engine"
+				testid="dictation-engine"
+				disabled={active || saving || engine === undefined}
+				onChange={(next) => { if (isDictationEngine(next)) void saveEngine(next); }}
+			>
+				{engine === undefined && <option value="">Loading</option>}
+				{DICTATION_ENGINES.map((id) => <option key={id} value={id}>{DICTATION_ENGINE_LABELS[id]}</option>)}
+			</ThinSelect>
+		</Hint>
 	</SettingsRow>;
 }
 
