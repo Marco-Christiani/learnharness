@@ -11,45 +11,28 @@ import { cn } from "@/lib/utils";
 import { readAloud, useReadAloud } from "./player";
 import { readSegments } from "./segments";
 
-/** Marks the element whose source passages a message's read-aloud button reads. */
+/** Marks the passage element a read-aloud button reads; the value is the read's key. */
 export const READ_ALOUD_SCOPE = "data-read-aloud-scope";
 
-function persistedSourceIds(scope: Element): string[] {
-	const ids: string[] = [];
-	for (const element of Array.from(scope.querySelectorAll(`[${SOURCE_ATTRIBUTE}]`))) {
-		const id = element.getAttribute(SOURCE_ATTRIBUTE);
-		// live (still streaming) messages carry c_ ids replaced at persist
-		if (id && !id.startsWith("c_") && !ids.includes(id)) ids.push(id);
-	}
-	return ids;
-}
-
-export function ReadAloudButton({ disabled }: { disabled?: boolean }) {
+/** Reads the one passage it sits in (the nearest READ_ALOUD_SCOPE element). */
+export function ReadAloudButton({ scopeKey, className }: { scopeKey: string; className?: string }) {
 	const state = useReadAloud();
 	const ref = useRef<HTMLButtonElement>(null);
-	const scopeKey = () => {
-		const scope = ref.current?.closest(`[${READ_ALOUD_SCOPE}]`);
-		return scope ? persistedSourceIds(scope)[0] ?? null : null;
-	};
-	const active = state.status !== "idle" && state.key !== null && state.key === scopeKey();
+	const active = state.status !== "idle" && state.key === scopeKey;
 	return (
 		<Button
 			ref={ref}
 			type="button"
 			variant="ghost"
 			size="icon-xs"
-			disabled={disabled}
 			aria-label={active ? "Stop reading aloud" : "Read aloud"}
 			title={active ? "Stop reading aloud" : "Read aloud"}
 			data-testid="read-aloud-button"
-			className={cn("text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100", active && "opacity-100 text-foreground")}
+			className={cn("text-muted-foreground opacity-0 transition-opacity focus-visible:opacity-100", className, active && "opacity-100 text-foreground")}
 			onClick={() => {
 				if (active) { readAloud.stop(); return; }
 				const scope = ref.current?.closest(`[${READ_ALOUD_SCOPE}]`);
-				if (!scope) return;
-				const ids = persistedSourceIds(scope);
-				const sources = Array.from(scope.querySelectorAll(`[${SOURCE_ATTRIBUTE}]`)).filter((el) => ids.includes(el.getAttribute(SOURCE_ATTRIBUTE)!));
-				if (ids[0]) readAloud.start(readSegments(sources), ids[0]);
+				if (scope) readAloud.start(readSegments([scope]), scopeKey);
 			}}
 		>
 			{active ? <Square /> : <Volume2 />}
@@ -147,13 +130,15 @@ export function ReadAloudBar({ className }: { className?: string }) {
 	const active = state.status !== "idle";
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const closeSettings = useCallback(() => setSettingsOpen(false), []);
+	const [drag, setDrag] = useState<number | null>(null);
 	useClickToJump(active);
 	useEffect(() => { if (!active) setSettingsOpen(false); }, [active]);
 	if (!active) return null;
-	const fraction = state.totalMs > 0 ? Math.min(state.positionMs / state.totalMs, 1) : 0;
-	const scrub = (event: PointerEvent<HTMLDivElement>) => {
+	// dragging only previews the position; audio is fetched where the drag is released
+	const fraction = drag ?? (state.totalMs > 0 ? Math.min(state.positionMs / state.totalMs, 1) : 0);
+	const pointerFraction = (event: PointerEvent<HTMLDivElement>) => {
 		const rect = event.currentTarget.getBoundingClientRect();
-		readAloud.seek(((event.clientX - rect.left) / rect.width) * state.totalMs);
+		return Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1);
 	};
 	return (
 		<div
@@ -177,8 +162,10 @@ export function ReadAloudBar({ className }: { className?: string }) {
 						aria-valuenow={Math.round(state.positionMs / 1000)}
 						tabIndex={0}
 						className="relative mx-2 h-4 w-40 cursor-pointer"
-						onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); scrub(event); }}
-						onPointerMove={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) scrub(event); }}
+						onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); setDrag(pointerFraction(event)); }}
+						onPointerMove={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) setDrag(pointerFraction(event)); }}
+						onPointerUp={(event) => { if (drag !== null) readAloud.seek(pointerFraction(event) * state.totalMs); setDrag(null); }}
+						onPointerCancel={() => setDrag(null)}
 						onKeyDown={(event) => {
 							if (event.key === "ArrowRight") readAloud.seek(state.positionMs + 5000);
 							else if (event.key === "ArrowLeft") readAloud.seek(state.positionMs - 5000);

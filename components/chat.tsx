@@ -1878,7 +1878,7 @@ export function Chat({
 												<SubmittedImages images={m.parts.filter((part) => part.type === "image").map(part => ({ type: "image" as const, data: part.data as string, mimeType: part.mimeType as string }))} />
 											</div>
 									) : (
-									<Message from="assistant" className="max-w-full" {...{ [READ_ALOUD_SCOPE]: "" }}>
+									<Message from="assistant" className="max-w-full">
 									<MessageContent className="w-full">
 											{m.parts.map((part, pi) => {
 												if (part.pluginProblem) return <ProblemCard key={pi} part={{ ...part, state: part.state ?? "input-available", toolCallId: part.toolCallId ?? "" }} />;
@@ -1916,8 +1916,11 @@ export function Chat({
 														const sourceId = textPartMessageId(part.id);
 														const anchor = sourceId && sourceTextParts.get(sourceId) === part.id ? messageAnchorId(sourceId) : undefined;
 														return (
-															<div key={part.id || pi} id={anchor} data-source-message-id={sourceId ?? undefined} className="lh-source-passage">
+															<div key={part.id || pi} id={anchor} data-source-message-id={sourceId ?? undefined} className="lh-source-passage group/passage" {...{ [READ_ALOUD_SCOPE]: part.id || `${m.id}:${pi}` }}>
 																<MessageResponse>{part.text}</MessageResponse>
+																{part.text && !(status === "streaming" && isLastPart) && (
+																	<div className="-mt-1 flex"><ReadAloudButton scopeKey={part.id || `${m.id}:${pi}`} className="group-hover/passage:opacity-100" /></div>
+																)}
 															</div>
 														);
 													}
@@ -1974,9 +1977,6 @@ export function Chat({
 											})}
 										</MessageContent>
 										{m.role === "assistant" && renderSideEntry(sideEntries.get(m.id)?.get(m.parts.length))}
-										{m.parts.some((part) => part.type === "text" && part.text) && !(status === "streaming" && mi === messages.length - 1) && (
-											<div className="-mt-1 flex"><ReadAloudButton /></div>
-										)}
 									</Message>
 									)}
 								</Fragment>
