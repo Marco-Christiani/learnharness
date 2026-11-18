@@ -634,3 +634,12 @@ body {
 	outline: 1px solid var(--border);
 	border-radius: 0.25rem;
 }
+
+/* Read-aloud follow-along: the segment being spoken, and the estimated word inside it. */
+::highlight(lh-read-sentence) {
+	background-color: var(--accent);
+}
+::highlight(lh-read-word) {
+	background-color: color-mix(in oklab, var(--ring) 45%, transparent);
+	color: var(--foreground);
+}

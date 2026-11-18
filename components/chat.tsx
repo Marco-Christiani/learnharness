@@ -80,6 +80,8 @@ import type { PluginQuestionDraft } from "./session-core";
 import { SessionFind } from "@/components/session-find";
 import { SessionMessageNavigation } from "@/components/session-navigation";
 import { SelectionToolbar } from "@/components/selection-toolbar";
+import { createReadAloudAction, READ_ALOUD_SCOPE, ReadAloudBar, ReadAloudButton } from "@/components/read-aloud/controls";
+import { readAloud } from "@/components/read-aloud/player";
 import { createCiteAction, type CitationEditTarget } from "@/components/citation-actions";
 import { CitationActionsContext, type CitationActions } from "@/components/citation-chip";
 import { CitationCommentPopover } from "@/components/citation-comment-popover";
@@ -1054,10 +1056,13 @@ export function Chat({
 	}, [toggleQuestionThread]);
 	// Advancing the lesson does not close or disable an old conversation.
 	const sideActions = useMemo(() => createSideQuestionActions({ open: openSideThread }), [openSideThread]);
-	const selectionActions = useMemo(() => [citeAction, ...sideActions], [citeAction, sideActions]);
 	const router = useRouter();
 	const transcriptElementRef = useRef<HTMLElement | null>(null);
 	transcriptElementRef.current = transcriptElement;
+	const readAloudAction = useMemo(() => createReadAloudAction(() => transcriptElementRef.current), []);
+	const selectionActions = useMemo(() => [citeAction, ...sideActions, readAloudAction], [citeAction, sideActions, readAloudAction]);
+	// a read belongs to the chat it started in
+	useEffect(() => () => readAloud.stop(), [chatId]);
 	const citationActions = useMemo<CitationActions>(() => ({
 		editComment: (citation, source) => setCitationEdit({ citation, link: source.link, start: source.start, host: source.host, input: source.host.closest<HTMLElement>("[data-file-path-input]") ?? undefined }),
 		openSource: (citation) => {
@@ -1873,7 +1878,7 @@ export function Chat({
 												<SubmittedImages images={m.parts.filter((part) => part.type === "image").map(part => ({ type: "image" as const, data: part.data as string, mimeType: part.mimeType as string }))} />
 											</div>
 									) : (
-									<Message from="assistant" className="max-w-full">
+									<Message from="assistant" className="max-w-full" {...{ [READ_ALOUD_SCOPE]: "" }}>
 									<MessageContent className="w-full">
 											{m.parts.map((part, pi) => {
 												if (part.pluginProblem) return <ProblemCard key={pi} part={{ ...part, state: part.state ?? "input-available", toolCallId: part.toolCallId ?? "" }} />;
@@ -1969,6 +1974,9 @@ export function Chat({
 											})}
 										</MessageContent>
 										{m.role === "assistant" && renderSideEntry(sideEntries.get(m.id)?.get(m.parts.length))}
+										{m.parts.some((part) => part.type === "text" && part.text) && !(status === "streaming" && mi === messages.length - 1) && (
+											<div className="-mt-1 flex"><ReadAloudButton /></div>
+										)}
 									</Message>
 									)}
 								</Fragment>
@@ -2842,7 +2850,9 @@ export function DockOverlay({
 
 	return (
 		<div className="pointer-events-none absolute inset-x-0 bottom-0" style={{ right: sbInset }}>
-			<div className="h-24 bg-gradient-to-t from-background via-background/85 to-transparent" />
+			<div className="relative h-24 bg-gradient-to-t from-background via-background/85 to-transparent">
+				<div className={`${DOCK} absolute inset-x-0 bottom-1 flex justify-center`}><ReadAloudBar /></div>
+			</div>
 			<div ref={blockRef} className="relative bg-background pb-5">
 				<div className={DOCK}>
 					<div ref={viewportRef} data-dock-viewport="" className="pointer-events-auto">
