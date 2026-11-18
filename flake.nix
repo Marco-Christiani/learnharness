@@ -23,34 +23,70 @@
         exec npm run dev -- -H 127.0.0.1 "$@"
       '';
     };
+    lib = pkgs.lib;
+    nodejs = pkgs.nodejs_26;
+    # each plugin keeps its own lockfile; npm resolves the generated .sdk link offline
+    pluginDeps = lib.mapAttrs (name: hash: pkgs.fetchNpmDeps {
+      name = "learnharness-plugin-${name}-npm-deps";
+      src = ./plugins/${name};
+      inherit hash;
+    }) {
+      coding-questions = "sha256-NWIHJiToak9X1qyMNSlZtMjyFatgIs0RHqmS0QcXzdo=";
+      drawing-pad = "sha256-zMTb53SFM4ZQT30ktIu7s+DwqYL1QCN6Mg3ZtF5aCfw=";
+      flashcards = "sha256-AGjSn0TFK8jx3VpgAROg9fjhZ7gT6CKBD6vr+FbZJKE=";
+      rich-code-blocks = "sha256-/jyfBWOCuludfG1Hg3bXCUqMttXeABe0vt/paW5sSyY=";
+      ui-showcase = "sha256-WnG+nUQjvVBnjLRcXwlGq0ubRjBiJoX5ZUvoDWtx+CI=";
+    };
+    # the standalone Next server, built offline in the sandbox
+    server = pkgs.buildNpmPackage {
+      pname = "learnharness-server";
+      version = (lib.importJSON ./package.json).version;
+      src = ./.;
+      inherit nodejs;
+      npmDeps = pkgs.importNpmLock {npmRoot = ./.;};
+      npmConfigHook = pkgs.importNpmLock.npmConfigHook;
+      nativeBuildInputs = [pkgs.autoPatchelfHook];
+      buildInputs = [pkgs.stdenv.cc.cc.lib];
+      # musl builds of prebuilt native modules ship alongside the glibc ones and are never loaded
+      autoPatchelfIgnoreMissingDeps = ["libc.musl-x86_64.so.1"];
+      env = {
+        ELECTRON_SKIP_BINARY_DOWNLOAD = "1";
+        NEXT_TELEMETRY_DISABLED = "1";
+      };
+      buildPhase = ''
+        runHook preBuild
+        export npm_config_cache="$TMPDIR/plugin-npm-cache"
+        mkdir -p "$npm_config_cache"
+        ${lib.concatMapStringsSep "\n" (deps: ''cp -r --no-preserve=mode ${deps}/. "$npm_config_cache"/'') (lib.attrValues pluginDeps)}
+        npm run plugins:setup
+        scratch=$(mktemp -d)
+        mkdir -p "$scratch/data"
+        printf '{}\n' > "$scratch/auth.json"
+        LH_DATA_DIR="$scratch/data" LH_AUTH_FILE="$scratch/auth.json" npm run build
+        LH_DATA_DIR="$scratch/data" LH_AUTH_FILE="$scratch/auth.json" node scripts/build-server.mjs
+        runHook postBuild
+      '';
+      installPhase = ''
+        runHook preInstall
+        mkdir -p "$out/share"
+        cp -r .next/standalone "$out/share/learnharness"
+        runHook postInstall
+      '';
+    };
     production = pkgs.writeShellApplication {
       name = "learnharness-production";
-      runtimeInputs = runtime;
+      runtimeInputs = [nodejs pkgs.coreutils];
       text = ''
         if (( $# > 0 )); then
           echo 'Usage: PORT=3017 nix run .#production' >&2
           exit 2
         fi
-        if [[ ! -f package.json ]] || [[ ! -f core-plugins.json ]]; then
-          echo 'Run from the LearnHarness checkout.' >&2
-          exit 1
-        fi
         export LH_DATA_DIR="''${LH_DATA_DIR:-''${XDG_DATA_HOME:-$HOME/.local/share}/learnharness-fork/data}"
         export LH_AUTH_FILE="''${LH_AUTH_FILE:-''${XDG_DATA_HOME:-$HOME/.local/share}/learnharness-fork/auth.json}"
         mkdir -p "$LH_DATA_DIR" "$(dirname "$LH_AUTH_FILE")"
-        if [[ ! -d node_modules ]]; then npm ci --ignore-scripts; fi
-        npm run plugins:setup
-        lh_build_scratch=$(mktemp -d)
-        trap 'rm -rf -- "$lh_build_scratch"' EXIT
-        mkdir -p "$lh_build_scratch/data"
-        printf '{}\n' > "$lh_build_scratch/auth.json"
-        LH_DATA_DIR="$lh_build_scratch/data" LH_AUTH_FILE="$lh_build_scratch/auth.json" npm run build
-        LH_DATA_DIR="$lh_build_scratch/data" LH_AUTH_FILE="$lh_build_scratch/auth.json" node scripts/build-server.mjs
-        rm -rf -- "$lh_build_scratch"
-        trap - EXIT
         export HOSTNAME=127.0.0.1
         export PORT="''${PORT:-3000}"
-        exec node --env-file-if-exists=.env.local .next/standalone/server.js
+        exec node --env-file-if-exists=.env.local ${server}/share/learnharness/server.js
       '';
     };
   in {
@@ -60,7 +96,7 @@
     };
     packages.${system} = {
       default = dev;
-      inherit production;
+      inherit production server;
     };
     apps.${system} = {
       default = {type = "app"; program = "${dev}/bin/learnharness-dev";};
